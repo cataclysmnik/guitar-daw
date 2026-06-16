@@ -143,6 +143,8 @@ class EffectCard(QFrame):
         super().__init__(parent)
         self.wrapper = wrapper
         self.track = track
+        self.is_selected = False
+        self.setProperty("selected", False)
         
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setObjectName("EffectCard")
@@ -188,8 +190,9 @@ class EffectCard(QFrame):
         body = QHBoxLayout()
         body.setSpacing(15)
         
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         if self.wrapper.effect_type == "VST3":
-            # For VST3, show "Open Editor" button and a path label
+            # For VST3, show a path label
             vst_layout = QVBoxLayout()
             vst_layout.setSpacing(4)
             
@@ -203,11 +206,6 @@ class EffectCard(QFrame):
             self.lbl_vst_path.setToolTip(vst_path)
             self.lbl_vst_path.setWordWrap(True)
             vst_layout.addWidget(self.lbl_vst_path)
-            
-            self.btn_editor = QPushButton("Settings")
-            self.btn_editor.setObjectName("VstEditorButton")
-            self.btn_editor.clicked.connect(self.open_vst_editor)
-            vst_layout.addWidget(self.btn_editor)
             
             body.addLayout(vst_layout)
         else:
@@ -292,19 +290,9 @@ class EffectCard(QFrame):
                 font-size: 10px;
                 font-family: "Segoe UI", sans-serif;
             }
-            QPushButton#VstEditorButton {
-                background-color: #333333;
-                color: #e0e0e0;
-                font-weight: bold;
-                border: 1px solid #444444;
-                border-radius: 3px;
-                padding: 6px 12px;
-                font-size: 11px;
-            }
-            QPushButton#VstEditorButton:hover {
-                background-color: #444444;
-                color: #ffffff;
-                border-color: #555555;
+            EffectCard[selected="true"] {
+                border-color: #ffffff;
+                background-color: #121214;
             }
         """)
         
@@ -319,6 +307,14 @@ class EffectCard(QFrame):
         if hasattr(self.wrapper.effect, param_name):
             setattr(self.wrapper.effect, param_name, value)
 
+    def set_selected(self, selected):
+        if self.is_selected == selected:
+            return
+        self.is_selected = selected
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
     def open_vst_editor(self):
         main_window = self.window()
         if hasattr(main_window, 'open_vst_in_tab'):
@@ -327,8 +323,30 @@ class EffectCard(QFrame):
             if hasattr(self.wrapper.effect, "show_editor"):
                 self.wrapper.effect.show_editor()
             else:
-                QMessageBox.warning(self, "VST3 Editor", "This plugin does not support a custom editor interface.")
+                if hasattr(main_window, 'show_themed_message_box'):
+                    main_window.show_themed_message_box("VST3 Editor", "This plugin does not support a custom editor interface.", QMessageBox.Icon.Warning)
+                else:
+                    QMessageBox.warning(self, "VST3 Editor", "This plugin does not support a custom editor interface.")
             
+    def mousePressEvent(self, event):
+        child = self.childAt(event.pos())
+        if child in (None, self, self.label_name) or (hasattr(self, 'lbl_vst_path') and child == self.lbl_vst_path) or isinstance(child, QLabel):
+            effects_rack = self.find_effects_rack()
+            if effects_rack:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, lambda: effects_rack.select_card(self))
+                return
+        super().mousePressEvent(event)
+
+    def find_effects_rack(self):
+        p = self.parent()
+        while p:
+            from widgets.effects_rack import EffectsRack
+            if isinstance(p, EffectsRack):
+                return p
+            p = p.parent()
+        return None
+
     def on_delete_clicked(self):
         self.track.effects.remove(self.wrapper)
         self.track.update_pedalboard()
@@ -341,6 +359,7 @@ class EffectsRack(QWidget):
         super().__init__(parent)
         self.audio_engine = audio_engine
         self.selected_track = None
+        self.selected_effect_wrapper = None
         
         self.setup_ui()
         
@@ -458,6 +477,30 @@ class EffectsRack(QWidget):
         self.selected_track = track
         self.refresh_rack()
         
+    def select_card(self, card):
+        self.selected_effect_wrapper = card.wrapper if card else None
+        
+        # Go through all cards and update their selected state
+        for i in range(self.scroll_layout.count()):
+            item = self.scroll_layout.itemAt(i)
+            if item:
+                w = item.widget()
+                if isinstance(w, EffectCard):
+                    w.set_selected(w == card)
+        
+        # Now trigger opening the VST settings/placeholder
+        main_window = self.window()
+        if card:
+            if card.wrapper.effect_type == "VST3":
+                if hasattr(main_window, 'open_vst_in_tab'):
+                    main_window.open_vst_in_tab(card, card.wrapper)
+            else:
+                if hasattr(main_window, 'show_builtin_placeholder'):
+                    main_window.show_builtin_placeholder(card.wrapper)
+        else:
+            if hasattr(main_window, 'show_no_vst_placeholder'):
+                main_window.show_no_vst_placeholder()
+
     def refresh_rack(self):
         """Clears and rebuilds the effects list."""
         # Clear existing card widgets (except the spacer stretch)
@@ -478,11 +521,28 @@ class EffectsRack(QWidget):
         self.btn_add.setEnabled(True)
         self.btn_add_vst.setEnabled(True)
         
+        # Verify selected effect wrapper is still in effects list
+        if self.selected_effect_wrapper not in self.selected_track.effects:
+            # Fallback to first effect
+            if self.selected_track.effects:
+                self.selected_effect_wrapper = self.selected_track.effects[0]
+            else:
+                self.selected_effect_wrapper = None
+                
+        selected_card = None
         # Insert cards for each effect (above the stretch spacer)
         for wrapper in self.selected_track.effects:
             card = EffectCard(wrapper, self.selected_track)
             card.effectChanged.connect(self.refresh_rack)
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
+            
+            if wrapper == self.selected_effect_wrapper:
+                card.set_selected(True)
+                selected_card = card
+            else:
+                card.set_selected(False)
+                
+        pass
             
     def on_add_effect(self):
         if not self.selected_track:
@@ -516,7 +576,11 @@ class EffectsRack(QWidget):
             elif fx_type == "HighpassFilter":
                 effect_obj = HighpassFilter(cutoff_frequency_hz=80)
         except Exception as e:
-            QMessageBox.critical(self, "Effect Error", f"Could not create effect: {e}")
+            main_window = self.window()
+            if hasattr(main_window, 'show_themed_message_box'):
+                main_window.show_themed_message_box("Effect Error", f"Could not create effect: {e}", QMessageBox.Icon.Critical)
+            else:
+                QMessageBox.critical(self, "Effect Error", f"Could not create effect: {e}")
             return
             
         if effect_obj:
@@ -533,14 +597,16 @@ class EffectsRack(QWidget):
             return
             
         file_filter = "VST3 Plugins (*.vst3)"
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select VST3 Plugin File",
-            "C:\\Program Files\\Common Files\\VST3",
-            file_filter
-        )
+        dlg = QFileDialog(self)
+        dlg.setWindowTitle("Select VST3 Plugin File")
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dlg.setNameFilter(file_filter)
+        dlg.setDirectory("C:\\Program Files\\Common Files\\VST3")
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        apply_dark_theme_to_hwnd(int(dlg.winId()))
         
-        if file_path:
+        if dlg.exec() == QFileDialog.DialogCode.Accepted:
+            file_path = dlg.selectedFiles()[0]
             self.load_scanned_vst3(file_path)
 
     def populate_vst_menu(self):
@@ -604,11 +670,12 @@ class EffectsRack(QWidget):
             
             self.refresh_rack()
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "VST3 Error",
-                f"Failed to load VST3 plugin at {file_path}.\n\nError details: {e}"
-            )
+            main_window = self.window()
+            err_text = f"Failed to load VST3 plugin at {file_path}.\n\nError details: {e}"
+            if hasattr(main_window, 'show_themed_message_box'):
+                main_window.show_themed_message_box("VST3 Error", err_text, QMessageBox.Icon.Critical)
+            else:
+                QMessageBox.critical(self, "VST3 Error", err_text)
         finally:
             if was_running and self.audio_engine:
                 self.audio_engine.start_stream()

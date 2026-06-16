@@ -68,6 +68,30 @@ def apply_dark_theme_to_hwnd(hwnd):
     except Exception as e:
         print(f"Failed to apply dark theme to hwnd: {e}")
 
+def run_in_dpi_context(hwnd, func):
+    if not hwnd:
+        return func()
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "GetWindowDpiAwarenessContext") and hasattr(user32, "SetThreadDpiAwarenessContext"):
+            user32.GetWindowDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            user32.GetWindowDpiAwarenessContext.restype = ctypes.c_void_p
+            user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+            
+            ctx = user32.GetWindowDpiAwarenessContext(hwnd)
+            if ctx:
+                old_ctx = user32.SetThreadDpiAwarenessContext(ctx)
+                try:
+                    return func()
+                finally:
+                    if old_ctx:
+                        user32.SetThreadDpiAwarenessContext(old_ctx)
+    except Exception as e:
+        print(f"DPI context wrapper warning: {e}")
+    return func()
+
 class MainWindow(FramelessWindowMixin, QMainWindow):
     """Core Main Window for the Guitar DAW application."""
     def __init__(self, splash=None):
@@ -94,6 +118,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self._vst_hwnd = None
         self._original_style = None
         self._last_vst_size = None
+        self._vst_borders = (0, 0)
         self.active_vst_card = None
         self.pending_vst_to_open = None
         self.vst_loop_running = False
@@ -362,49 +387,12 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         # Tab 2: VST Settings
         self.vst_settings_tab = QWidget()
         vst_settings_layout = QVBoxLayout(self.vst_settings_tab)
-        vst_settings_layout.setContentsMargins(0, 0, 0, 0)
+        vst_settings_layout.setContentsMargins(10, 10, 10, 10)
         vst_settings_layout.setSpacing(0)
         
-        # Splitter to hold Effects Rack on the left and VST container stack on the right
-        vst_splitter = QSplitter(Qt.Orientation.Horizontal, self.vst_settings_tab)
-        vst_splitter.setObjectName("VstSplitter")
-        
-        # Put effects rack in the splitter
-        vst_splitter.addWidget(self.effects_rack)
-        
-        # Stacked Widget inside VST Settings tab
-        self.vst_stack = QStackedWidget(vst_splitter)
-        
-        # Page 0: Placeholder
-        self.placeholder_page = QWidget()
-        placeholder_layout = QVBoxLayout(self.placeholder_page)
-        self.lbl_placeholder = QLabel("NO VST ACTIVE\n\nSELECT 'SETTINGS' ON A VST IN THE EFFECTS RACK TO CONFIGURE")
-        self.lbl_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_placeholder.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
-        self.lbl_placeholder.setStyleSheet("color: #66666a; line-height: 1.5;")
-        placeholder_layout.addWidget(self.lbl_placeholder)
-        self.vst_stack.addWidget(self.placeholder_page)
-        
-        # Page 1: VST Container
-        self.vst_container_page = QWidget()
-        container_layout = QVBoxLayout(self.vst_container_page)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        container_layout.setSpacing(0)
-        
-        self.vst_container = QWidget(self.vst_container_page)
-        self.vst_container.setObjectName("MainVstContainer")
-        self.vst_container.setAttribute(Qt.WA_NativeWindow, True)
-        self.vst_container.setStyleSheet("background-color: #000000;")
-        container_layout.addWidget(self.vst_container)
-        
-        self.vst_stack.addWidget(self.vst_container_page)
-        self.vst_stack.setCurrentIndex(0)
-        
-        vst_splitter.addWidget(self.vst_stack)
-        vst_splitter.setSizes([350, 650])
-        
-        vst_settings_layout.addWidget(vst_splitter)
-        self.main_tabs.addTab(self.vst_settings_tab, "VST SETTINGS")
+        # Put effects rack directly in the tab layout (no splitter, no vst_stack container)
+        vst_settings_layout.addWidget(self.effects_rack)
+        self.main_tabs.addTab(self.vst_settings_tab, "EFFECTS")
         
         content_layout.addWidget(self.main_tabs)
         main_layout.addWidget(content_widget)
@@ -481,6 +469,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 border-bottom: 1px solid #222225;
                 font-family: "Consolas", "Courier New", monospace;
                 font-size: 11px;
+                padding-left: 10px;
             }
             QMenuBar::item {
                 background-color: transparent;
@@ -564,6 +553,103 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 background: #ffffff;
                 border-color: #ff0033;
             }
+            QDialog {
+                background-color: #0b0b0c;
+                border: 1px solid #222225;
+            }
+            QMessageBox {
+                background-color: #0b0b0c;
+                color: #e2e2e5;
+            }
+            QMessageBox QLabel {
+                color: #e2e2e5;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
+            }
+            QMessageBox QPushButton {
+                background-color: #0b0b0c;
+                color: #88888c;
+                border: 1px solid #222225;
+                border-radius: 4px;
+                padding: 5px 15px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QMessageBox QPushButton:hover {
+                background-color: #1a1a1c;
+                color: #ffffff;
+                border-color: #444448;
+            }
+            QFileDialog {
+                background-color: #0b0b0c;
+            }
+            QFileDialog QPushButton {
+                background-color: #0b0b0c;
+                color: #88888c;
+                border: 1px solid #222225;
+                border-radius: 4px;
+                padding: 5px 15px;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QFileDialog QPushButton:hover {
+                background-color: #1a1a1c;
+                color: #ffffff;
+                border-color: #444448;
+            }
+            QFileDialog QLineEdit {
+                background-color: #000000;
+                color: #ffffff;
+                border: 1px solid #222225;
+                border-radius: 4px;
+                padding: 4px;
+                font-family: "Consolas", "Courier New", monospace;
+            }
+            QFileDialog QTreeView, QFileDialog QListView {
+                background-color: #000000;
+                color: #88888c;
+                border: 1px solid #222225;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
+            }
+            QFileDialog QTreeView::item:hover, QFileDialog QListView::item:hover {
+                background-color: #1a1a1c;
+                color: #ffffff;
+            }
+            QFileDialog QTreeView::item:selected, QFileDialog QListView::item:selected {
+                background-color: #ffffff;
+                color: #000000;
+            }
+            QFileDialog QHeaderView::section {
+                background-color: #0b0b0c;
+                color: #ffffff;
+                border: 1px solid #222225;
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 4px;
+            }
+            QFileDialog QComboBox {
+                background-color: #000000;
+                color: #88888c;
+                border: 1px solid #222225;
+                border-radius: 4px;
+                padding: 4px;
+                font-family: "Consolas", "Courier New", monospace;
+            }
+            QFileDialog QToolButton {
+                background-color: #0b0b0c;
+                color: #88888c;
+                border: 1px solid #222225;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QFileDialog QToolButton:hover {
+                background-color: #1a1a1c;
+                color: #ffffff;
+            }
         """)
 
     def refresh_track_cards(self):
@@ -596,6 +682,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def on_track_selected(self, track):
         """Deselects other cards and selects this track."""
+        self.close_active_vst(switch_tab=False)
         self.selected_track = track
         self.audio_engine.selected_track_id = track.track_id if track else None
         for card in self.track_cards:
@@ -721,10 +808,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def on_new_project(self):
         """Clears all tracks and creates a blank project."""
-        reply = QMessageBox.question(
-            self,
+        reply = self.show_themed_message_box(
             "New Project",
             "Are you sure you want to clear current session and create a new project?",
+            QMessageBox.Icon.Question,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -745,21 +832,31 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def on_save_project(self):
         """Saves current state to JSON file dialog."""
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Graphite Session",
-            "",
-            "Graphite DAW Project (*.graphite)"
-        )
-        if file_path:
-            # Add extension if not typed
+        dlg = QFileDialog(self)
+        dlg.setWindowTitle("Save Graphite Session")
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
+        dlg.setNameFilter("Graphite DAW Project (*.graphite)")
+        dlg.setDefaultSuffix("graphite")
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        apply_dark_theme_to_hwnd(int(dlg.winId()))
+        
+        if dlg.exec() == QFileDialog.DialogCode.Accepted:
+            file_path = dlg.selectedFiles()[0]
             if not file_path.endswith(".graphite"):
                 file_path += ".graphite"
             success = project_manager.save_project(file_path, self.audio_engine)
             if success:
-                QMessageBox.information(self, "Project Saved", f"Successfully saved session to:\n{os.path.basename(file_path)}")
+                self.show_themed_message_box(
+                    "Project Saved",
+                    f"Successfully saved session to:\n{os.path.basename(file_path)}",
+                    QMessageBox.Icon.Information
+                )
             else:
-                QMessageBox.critical(self, "Save Error", "Failed to save project file.")
+                self.show_themed_message_box(
+                    "Save Error",
+                    "Failed to save project file.",
+                    QMessageBox.Icon.Critical
+                )
  
     def on_export_audio(self):
         """Opens the export settings dialog to render timeline mixdown to file."""
@@ -769,13 +866,15 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
  
     def on_load_project(self):
         """Loads session file and rebuilds cards UI."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Graphite Session",
-            "",
-            "Graphite DAW Project (*.graphite *.gtrp);;Graphite Project (*.graphite);;Legacy Cyberamp Project (*.gtrp)"
-        )
-        if file_path:
+        dlg = QFileDialog(self)
+        dlg.setWindowTitle("Open Graphite Session")
+        dlg.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dlg.setNameFilter("Graphite DAW Project (*.graphite *.gtrp);;Graphite Project (*.graphite);;Legacy Cyberamp Project (*.gtrp)")
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        apply_dark_theme_to_hwnd(int(dlg.winId()))
+        
+        if dlg.exec() == QFileDialog.DialogCode.Accepted:
+            file_path = dlg.selectedFiles()[0]
             success = project_manager.load_project(file_path, self.audio_engine)
             if success:
                 # Rebuild cards and GUI state
@@ -793,14 +892,22 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 if hasattr(self, 'timeline'):
                     self.timeline.update_track_layout()
                     
-                QMessageBox.information(self, "Project Loaded", f"Successfully loaded session:\n{os.path.basename(file_path)}")
+                self.show_themed_message_box(
+                    "Project Loaded",
+                    f"Successfully loaded session:\n{os.path.basename(file_path)}",
+                    QMessageBox.Icon.Information
+                )
             else:
-                QMessageBox.critical(self, "Load Error", "Failed to parse or restore project file. Some VST3s may have failed loading.")
+                self.show_themed_message_box(
+                    "Load Error",
+                    "Failed to parse or restore project file. Some VST3s may have failed loading.",
+                    QMessageBox.Icon.Critical
+                )
 
     def open_vst_in_tab(self, card, wrapper):
         try:
             if not hasattr(wrapper.effect, "show_editor"):
-                QMessageBox.warning(self, "VST3 Editor", "This plugin does not support a custom editor interface.")
+                self.show_themed_message_box("VST3 Editor", "This plugin does not support a custom editor interface.", QMessageBox.Icon.Warning)
                 return
             
             import platform
@@ -819,30 +926,30 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             # Check serialization lock
             if self.vst_loop_running:
                 if self.active_vst_card is card:
-                    self.main_tabs.setCurrentIndex(0)
+                    return
                 else:
                     self.pending_vst_to_open = (card, wrapper)
                     if self._vst_hwnd and user32.IsWindow(self._vst_hwnd):
+                        self._enforce_timer.stop()
                         WM_CLOSE = 0x0010
                         user32.PostMessageW(self._vst_hwnd, WM_CLOSE, 0, 0)
                     else:
-                        self.close_active_vst()
+                        self.close_active_vst(switch_tab=False)
                 return
             
             # If a VST is already active
             if self.active_vst_card is not None:
                 if self.active_vst_card is card:
-                    # Clicked "Settings" on the currently open card -> Switch back to Workspace
-                    self.main_tabs.setCurrentIndex(0)
                     return
                 else:
-                    # Clicked "Settings" on a different card -> Set pending and trigger close
+                    # Clicked a different card -> Set pending and trigger close
                     self.pending_vst_to_open = (card, wrapper)
                     if self._vst_hwnd and user32.IsWindow(self._vst_hwnd):
+                        self._enforce_timer.stop()
                         WM_CLOSE = 0x0010
                         user32.PostMessageW(self._vst_hwnd, WM_CLOSE, 0, 0)
                     else:
-                        self.close_active_vst()
+                        self.close_active_vst(switch_tab=False)
                     return
             
             # Use pointer-safe window style functions to prevent OverflowError
@@ -851,18 +958,14 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
             user32.GetWindowLongPtrW.restype = ctypes.c_void_p
             
-            # Switch to Tab 2 and container page immediately
-            plugin_name_str = wrapper.name
             self.active_vst_card = card
-            self.main_tabs.setTabText(1, f"SETTINGS: {plugin_name_str.upper()}")
-            self.vst_stack.setCurrentIndex(1)
-            self.main_tabs.setCurrentIndex(1)
+            
+            from PySide6.QtCore import QCoreApplication
+            QCoreApplication.processEvents()
             
             self._enforce_timer.start()
             
-            container_hwnd = int(self.vst_container.winId())
             vst_hwnd_ref = [None]
-            original_style_ref = [None]
             
             EVENT_OBJECT_CREATE = 0x8000
             EVENT_OBJECT_SHOW = 0x8002
@@ -876,7 +979,6 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             )
             
             hook_ref = [None]
-            processed = set()
             
             def _win_event_callback(hHook, event, hwnd, idObject, idChild, tid, time):
                 if not hwnd or idObject != 0:
@@ -887,10 +989,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                     return
                 
                 try:
-                    if not self.vst_container:
-                        return
                     live_dialog_hwnd = int(self.winId())
-                    container_hwnd_val = int(self.vst_container.winId())
                 except (RuntimeError, AttributeError):
                     return
                 
@@ -903,7 +1002,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 if not root:
                     root = hwnd
                     
-                if root == live_dialog_hwnd or root == container_hwnd_val:
+                if root == live_dialog_hwnd:
                     return
                 
                 if not user32.IsWindow(root):
@@ -918,87 +1017,53 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 if class_name in ("#32768", "tooltips_class32", "ComboLBox"):
                     return
                 
-                # Verify that it is the main VST editor window (must have a title bar / caption)
-                GWL_STYLE = -16
-                style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
-                style = ctypes.cast(style_ptr, ctypes.c_void_p).value or 0
-                WS_CAPTION = 0x00C00000
-                if not (style & WS_CAPTION):
-                    return
-                    
-                GW_OWNER = 4
-                owner = user32.GetWindow(root, GW_OWNER)
-                if owner:
-                    owner_class_buf = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(owner, owner_class_buf, 256)
-                    if not owner_class_buf.value.startswith("Qt"):
-                        return
-                    
                 length = user32.GetWindowTextLengthW(root)
                 buf = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(root, buf, length + 1)
-                if buf.value == "Graphite":
+                title = buf.value
+                if title == "Graphite":
                     return
                 
-                is_new = root not in processed
-                processed.add(root)
+                # Check client size to ignore zero-size or collapsed helper windows
+                class RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                client_rect = RECT()
+                user32.GetClientRect(root, ctypes.byref(client_rect))
+                cw = client_rect.right - client_rect.left
+                ch = client_rect.bottom - client_rect.top
+                if cw <= 100 or ch <= 100:
+                    return
+                
+                GWL_STYLE = -16
+                style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
+                style = ctypes.cast(style_ptr, ctypes.c_void_p).value or 0
+                
+                print(f"[VST Debug] Callback Match: hwnd={root}, class={class_name}, title='{title}', size={cw}x{ch}, style={hex(style)}")
                 
                 vst_hwnd_ref[0] = root
                 self._vst_hwnd = root
                 
-                class RECT(ctypes.Structure):
-                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-                
-                rect = RECT()
-                user32.GetClientRect(root, ctypes.byref(rect))
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                
-                GWL_STYLE = -16
+                # Force Windows title bar styles and standard controls
                 WS_POPUP = 0x80000000
                 WS_CAPTION = 0x00C00000
+                WS_SYSMENU = 0x00080000
                 WS_THICKFRAME = 0x00040000
-                WS_CHILD = 0x40000000
+                WS_MINIMIZEBOX = 0x00020000
+                WS_MAXIMIZEBOX = 0x00010000
                 
-                style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
-                style = ctypes.cast(style_ptr, ctypes.c_void_p).value
-                if style is None:
-                    style = 0
+                new_style = (style | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+                user32.SetWindowLongPtrW(root, GWL_STYLE, ctypes.c_void_p(new_style))
                 
-                if is_new:
-                    original_style_ref[0] = style
-                    self._original_style = style
-                
-                style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME) | WS_CHILD
-                user32.SetWindowLongPtrW(root, GWL_STYLE, ctypes.c_void_p(style))
-                
-                GWL_EXSTYLE = -20
-                ex_style_ptr = user32.GetWindowLongPtrW(root, GWL_EXSTYLE)
-                ex_style = ctypes.cast(ex_style_ptr, ctypes.c_void_p).value
-                if ex_style is not None:
-                    WS_EX_DLGMODALFRAME = 0x00000001
-                    WS_EX_WINDOWEDGE = 0x00000100
-                    WS_EX_CLIENTEDGE = 0x00000200
-                    WS_EX_STATICEDGE = 0x00020000
-                    new_ex_style = ex_style & ~WS_EX_DLGMODALFRAME & ~WS_EX_WINDOWEDGE & ~WS_EX_CLIENTEDGE & ~WS_EX_STATICEDGE
-                    user32.SetWindowLongPtrW(root, GWL_EXSTYLE, ctypes.c_void_p(new_ex_style))
-                
-                user32.SetParent(root, container_hwnd)
-                
-                dpi = self.devicePixelRatioF()
-                self._last_vst_size = (w, h)
-                
-                container_w_phys = int(self.vst_container.width() * dpi)
-                container_h_phys = int(self.vst_container.height() * dpi)
-                x = max(0, (container_w_phys - w) // 2)
-                y = max(0, (container_h_phys - h) // 2)
-                
-                user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+                # Force frame change to apply styling immediately
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
                 SWP_NOZORDER = 0x0004
                 SWP_FRAMECHANGED = 0x0020
-                SWP_SHOWWINDOW = 0x0040
-                user32.SetWindowPos(root, 0, x, y, w, h, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+                user32.SetWindowPos(root, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                
+                # Stop scanner timer
+                self._enforce_timer.stop()
                 
             self._vst_hook_cb = WINEVENTPROC(_win_event_callback)
             hook_ref[0] = user32.SetWinEventHook(
@@ -1018,14 +1083,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 hook_ref[0] = None
             self._vst_hook_cb = None
             
-            # Cleanly reparent back before fully closing
             if self.active_vst_card is card:
-                if self._vst_hwnd and user32.IsWindow(self._vst_hwnd):
-                    user32.SetParent(self._vst_hwnd, 0)
-                    if self._original_style is not None:
-                        GWL_STYLE = -16
-                        user32.SetWindowLongPtrW(self._vst_hwnd, GWL_STYLE, ctypes.c_void_p(self._original_style))
-                
                 self._vst_hwnd = None
                 self._original_style = None
                 self._last_vst_size = None
@@ -1040,9 +1098,9 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             
         except Exception as e:
             self.vst_loop_running = False
-            QMessageBox.critical(self, "VST3 Editor Error", f"Failed to open editor: {e}")
+            self.show_themed_message_box("VST3 Editor Error", f"Failed to open editor: {e}", QMessageBox.Icon.Critical)
 
-    def close_active_vst(self):
+    def close_active_vst(self, switch_tab=True):
         self._enforce_timer.stop()
         self.pending_vst_to_open = None
         if self._vst_hwnd:
@@ -1050,17 +1108,6 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 import ctypes
                 user32 = ctypes.windll.user32
                 if user32.IsWindow(self._vst_hwnd):
-                    user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-                    
-                    # Reparent back to desktop before closing
-                    user32.SetParent(self._vst_hwnd, 0)
-                    
-                    # Restore original styles
-                    if self._original_style is not None:
-                        GWL_STYLE = -16
-                        user32.SetWindowLongPtrW(self._vst_hwnd, GWL_STYLE, ctypes.c_void_p(self._original_style))
-                    
                     WM_CLOSE = 0x0010
                     user32.PostMessageW(self._vst_hwnd, WM_CLOSE, 0, 0)
             except Exception:
@@ -1070,50 +1117,45 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             self._last_vst_size = None
 
         self.active_vst_card = None
-        self.main_tabs.setTabText(1, "VST SETTINGS")
-        self.vst_stack.setCurrentIndex(0)
-        if self.main_tabs.currentIndex() == 1:
-            self.main_tabs.setCurrentIndex(0)
+
+    def show_builtin_placeholder(self, wrapper):
+        self.close_active_vst(switch_tab=False)
+
+    def show_no_vst_placeholder(self):
+        self.close_active_vst(switch_tab=False)
 
     def on_tab_changed(self, index):
         if index == 0:
             if self.active_vst_card:
                 self.close_active_vst()
 
+    def show_themed_message_box(self, title, text, icon=QMessageBox.Icon.Information, buttons=QMessageBox.StandardButton.Ok):
+        msg = QMessageBox(self)
+        msg.setWindowTitle(title)
+        msg.setText(text)
+        msg.setIcon(icon)
+        msg.setStandardButtons(buttons)
+        apply_dark_theme_to_hwnd(int(msg.winId()))
+        return msg.exec()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if self._vst_hwnd and self._last_vst_size:
-            try:
-                import ctypes
-                user32 = ctypes.windll.user32
-                if user32.IsWindow(self._vst_hwnd):
-                    vst_w, vst_h = self._last_vst_size
-                    dpi = self.devicePixelRatioF()
-                    container_w_phys = int(self.vst_container.width() * dpi)
-                    container_h_phys = int(self.vst_container.height() * dpi)
-                    x = max(0, (container_w_phys - vst_w) // 2)
-                    y = max(0, (container_h_phys - vst_h) // 2)
-                    
-                    user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-                    SWP_NOZORDER = 0x0004
-                    SWP_NOACTIVATE = 0x0010
-                    user32.SetWindowPos(self._vst_hwnd, 0, x, y, vst_w, vst_h, SWP_NOZORDER | SWP_NOACTIVATE)
-            except Exception:
-                pass
 
     def _enforce_vst_window(self):
+        if self._vst_hwnd:
+            self._enforce_timer.stop()
+            return
+            
         import ctypes
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
         current_pid = kernel32.GetCurrentProcessId()
         
-        # Actively scan for the VST window as a fallback if not captured by the hook
-        if not self._vst_hwnd and self.active_vst_card:
+        if self.active_vst_card:
             try:
                 found_hwnds = []
                 GA_ROOT = 2
                 main_hwnd = int(self.winId())
-                container_hwnd = int(self.vst_container.winId())
                 
                 WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
                 
@@ -1122,27 +1164,22 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                     if pid.value == current_pid:
                         root = user32.GetAncestor(hwnd, GA_ROOT)
-                        if root and user32.IsWindow(root) and root != main_hwnd and root != container_hwnd:
+                        if root and user32.IsWindow(root) and root != main_hwnd:
                             class_buf = ctypes.create_unicode_buffer(256)
                             user32.GetClassNameW(root, class_buf, 256)
                             class_name = class_buf.value
                             if not class_name.startswith("Qt") and class_name not in ("#32768", "tooltips_class32", "ComboLBox"):
-                                # Verify that it is the main VST editor window (must have a title bar / caption)
-                                GWL_STYLE = -16
-                                style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
-                                style = ctypes.cast(style_ptr, ctypes.c_void_p).value or 0
-                                WS_CAPTION = 0x00C00000
-                                if not (style & WS_CAPTION):
-                                    return True
+                                # Check client size to ignore zero-size or collapsed helper windows
+                                class RECT(ctypes.Structure):
+                                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+                                client_rect = RECT()
+                                user32.GetClientRect(root, ctypes.byref(client_rect))
+                                cw = client_rect.right - client_rect.left
+                                ch = client_rect.bottom - client_rect.top
                                 
-                                GW_OWNER = 4
-                                owner = user32.GetWindow(root, GW_OWNER)
-                                if owner:
-                                    owner_class_buf = ctypes.create_unicode_buffer(256)
-                                    if user32.GetClassNameW(owner, owner_class_buf, 256):
-                                        if not owner_class_buf.value.startswith("Qt"):
-                                            return True
-                                found_hwnds.append(root)
+                                if cw > 100 and ch > 100:
+                                    found_hwnds.append(root)
                     return True
                     
                 cb = WNDENUMPROC(enum_windows_cb)
@@ -1152,148 +1189,34 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                     root = found_hwnds[0]
                     self._vst_hwnd = root
                     
-                    class RECT(ctypes.Structure):
-                        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-                    
-                    rect = RECT()
-                    user32.GetClientRect(root, ctypes.byref(rect))
-                    w = rect.right - rect.left
-                    h = rect.bottom - rect.top
-                    
                     GWL_STYLE = -16
+                    style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
+                    style = ctypes.cast(style_ptr, ctypes.c_void_p).value or 0
+                    
+                    print(f"[VST Debug] Scan Match: hwnd={root}, style={hex(style)}")
+                    
+                    # Force Windows title bar styles and standard controls
                     WS_POPUP = 0x80000000
                     WS_CAPTION = 0x00C00000
+                    WS_SYSMENU = 0x00080000
                     WS_THICKFRAME = 0x00040000
-                    WS_CHILD = 0x40000000
+                    WS_MINIMIZEBOX = 0x00020000
+                    WS_MAXIMIZEBOX = 0x00010000
                     
-                    user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-                    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-                    user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-                    user32.GetWindowLongPtrW.restype = ctypes.c_void_p
+                    new_style = (style | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+                    user32.SetWindowLongPtrW(root, GWL_STYLE, ctypes.c_void_p(new_style))
                     
-                    style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
-                    style = ctypes.cast(style_ptr, ctypes.c_void_p).value
-                    if style is None:
-                        style = 0
-                    
-                    self._original_style = style
-                    
-                    style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME) | WS_CHILD
-                    user32.SetWindowLongPtrW(root, GWL_STYLE, ctypes.c_void_p(style))
-                    
-                    GWL_EXSTYLE = -20
-                    ex_style_ptr = user32.GetWindowLongPtrW(root, GWL_EXSTYLE)
-                    ex_style = ctypes.cast(ex_style_ptr, ctypes.c_void_p).value
-                    if ex_style is not None:
-                        WS_EX_DLGMODALFRAME = 0x00000001
-                        WS_EX_WINDOWEDGE = 0x00000100
-                        WS_EX_CLIENTEDGE = 0x00000200
-                        WS_EX_STATICEDGE = 0x00020000
-                        new_ex_style = ex_style & ~WS_EX_DLGMODALFRAME & ~WS_EX_WINDOWEDGE & ~WS_EX_CLIENTEDGE & ~WS_EX_STATICEDGE
-                        user32.SetWindowLongPtrW(root, GWL_EXSTYLE, ctypes.c_void_p(new_ex_style))
-                    
-                    user32.SetParent(root, container_hwnd)
-                    
-                    dpi = self.devicePixelRatioF()
-                    self._last_vst_size = (w, h)
-                    
-                    container_w_phys = int(self.vst_container.width() * dpi)
-                    container_h_phys = int(self.vst_container.height() * dpi)
-                    x = max(0, (container_w_phys - w) // 2)
-                    y = max(0, (container_h_phys - h) // 2)
-                    
-                    user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+                    # Force frame change to apply styling immediately
+                    SWP_NOMOVE = 0x0002
+                    SWP_NOSIZE = 0x0001
                     SWP_NOZORDER = 0x0004
                     SWP_FRAMECHANGED = 0x0020
-                    SWP_SHOWWINDOW = 0x0040
-                    user32.SetWindowPos(root, 0, x, y, w, h, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+                    user32.SetWindowPos(root, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+                    
+                    # Stop scanner timer
+                    self._enforce_timer.stop()
             except Exception:
                 pass
-        
-        if not self._vst_hwnd:
-            return
-            
-        try:
-            if not user32.IsWindow(self._vst_hwnd):
-                self._vst_hwnd = None
-                return
-                
-            container_hwnd = int(self.vst_container.winId())
-            main_hwnd = int(self.winId())
-            
-            current_parent = user32.GetParent(self._vst_hwnd)
-            if current_parent != container_hwnd:
-                user32.SetParent(self._vst_hwnd, container_hwnd)
-                
-            GWL_STYLE = -16
-            WS_POPUP = 0x80000000
-            WS_CAPTION = 0x00C00000
-            WS_THICKFRAME = 0x00040000
-            WS_CHILD = 0x40000000
-            
-            user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-            user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-            user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            user32.GetWindowLongPtrW.restype = ctypes.c_void_p
-            
-            style_ptr = user32.GetWindowLongPtrW(self._vst_hwnd, GWL_STYLE)
-            style = ctypes.cast(style_ptr, ctypes.c_void_p).value
-            if style is not None:
-                new_style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME) | WS_CHILD
-                if style != new_style:
-                    user32.SetWindowLongPtrW(self._vst_hwnd, GWL_STYLE, ctypes.c_void_p(new_style))
-                    
-            GWL_EXSTYLE = -20
-            ex_style_ptr = user32.GetWindowLongPtrW(self._vst_hwnd, GWL_EXSTYLE)
-            ex_style = ctypes.cast(ex_style_ptr, ctypes.c_void_p).value
-            if ex_style is not None:
-                WS_EX_DLGMODALFRAME = 0x00000001
-                WS_EX_WINDOWEDGE = 0x00000100
-                WS_EX_CLIENTEDGE = 0x00000200
-                WS_EX_STATICEDGE = 0x00020000
-                new_ex_style = ex_style & ~WS_EX_DLGMODALFRAME & ~WS_EX_WINDOWEDGE & ~WS_EX_CLIENTEDGE & ~WS_EX_STATICEDGE
-                if ex_style != new_ex_style:
-                    user32.SetWindowLongPtrW(self._vst_hwnd, GWL_EXSTYLE, ctypes.c_void_p(new_ex_style))
-            
-            WS_CLIPCHILDREN = 0x02000000
-            for hwnd_to_clip in (main_hwnd, container_hwnd):
-                style_ptr = user32.GetWindowLongPtrW(hwnd_to_clip, GWL_STYLE)
-                current_style = ctypes.cast(style_ptr, ctypes.c_void_p).value
-                if current_style is not None and not (current_style & WS_CLIPCHILDREN):
-                    user32.SetWindowLongPtrW(hwnd_to_clip, GWL_STYLE, ctypes.c_void_p(current_style | WS_CLIPCHILDREN))
-
-            class RECT(ctypes.Structure):
-                _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                            ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-            class POINT(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-            
-            rect = RECT()
-            user32.GetWindowRect(self._vst_hwnd, ctypes.byref(rect))
-            vst_w = rect.right - rect.left
-            vst_h = rect.bottom - rect.top
-            
-            pt = POINT(rect.left, rect.top)
-            user32.ScreenToClient(container_hwnd, ctypes.byref(pt))
-            
-            dpi = self.devicePixelRatioF()
-            container_w_phys = int(self.vst_container.width() * dpi)
-            container_h_phys = int(self.vst_container.height() * dpi)
-            
-            if vst_w > 50 and vst_h > 50:
-                self._last_vst_size = (vst_w, vst_h)
-            
-            expected_x = max(0, (container_w_phys - vst_w) // 2)
-            expected_y = max(0, (container_h_phys - vst_h) // 2)
-            
-            if pt.x != expected_x or pt.y != expected_y or vst_w != self._last_vst_size[0] or vst_h != self._last_vst_size[1]:
-                user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
-                SWP_NOZORDER = 0x0004
-                SWP_NOACTIVATE = 0x0010
-                user32.SetWindowPos(self._vst_hwnd, 0, expected_x, expected_y, vst_w, vst_h, SWP_NOZORDER | SWP_NOACTIVATE)
-        except Exception:
-            pass
 
     def closeEvent(self, event):
         """Release audio stream explicitly when app terminates."""
