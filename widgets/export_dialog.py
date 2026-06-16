@@ -53,6 +53,7 @@ class ExportDialog(QDialog):
         
         self.setup_ui()
         self.calculate_project_length()
+        self.load_export_settings()
         
     def setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -332,6 +333,24 @@ class ExportDialog(QDialog):
         format_idx = self.combo_format.currentIndex()
         format_type = "wav" if format_idx == 0 else "mp3"
         
+        # Auto-append correct extension if not present
+        ext = ".wav" if format_type == "wav" else ".mp3"
+        if not file_path.lower().endswith(ext):
+            file_path += ext
+            self.txt_path.setText(file_path)
+            
+        # Save export settings to QSettings
+        from PySide6.QtCore import QSettings
+        settings = QSettings("GraphiteStudio", "GraphiteDAW")
+        settings.setValue("export/format", format_idx)
+        settings.setValue("export/sample_rate", sample_rate)
+        settings.setValue("export/bit_depth", bit_depth)
+        settings.setValue("export/channels", channels)
+        settings.setValue("export/range", 0 if self.radio_entire.isChecked() else 1)
+        settings.setValue("export/custom_start", self.spin_start.value())
+        settings.setValue("export/custom_end", self.spin_end.value())
+        settings.setValue("export/path", file_path)
+        
         if self.radio_entire.isChecked():
             start_time = 0.0
             # Calculate live project end
@@ -402,3 +421,50 @@ class ExportDialog(QDialog):
         else:
             self.btn_open_folder.setEnabled(False)
             QMessageBox.critical(self, "Export Error", f"Failed to export project:\n{message}")
+            
+    def load_export_settings(self):
+        from PySide6.QtCore import QSettings
+        settings = QSettings("GraphiteStudio", "GraphiteDAW")
+        
+        # Load format
+        format_idx = settings.value("export/format", 0, type=int)
+        if 0 <= format_idx < self.combo_format.count():
+            self.combo_format.setCurrentIndex(format_idx)
+            
+        # Load sample rate
+        sr_val = settings.value("export/sample_rate", 0, type=int)
+        if sr_val > 0:
+            idx = self.combo_sr.findText(str(sr_val), Qt.MatchFlag.MatchContains)
+            if idx >= 0:
+                self.combo_sr.setCurrentIndex(idx)
+                
+        # Load bit depth
+        depth_val = settings.value("export/bit_depth", 16, type=int)
+        idx = self.combo_depth.findData(depth_val)
+        if idx >= 0:
+            self.combo_depth.setCurrentIndex(idx)
+            
+        # Load channels
+        chan_val = settings.value("export/channels", "stereo", type=str)
+        idx = self.combo_channels.findData(chan_val)
+        if idx >= 0:
+            self.combo_channels.setCurrentIndex(idx)
+            
+        # Load range bounds
+        range_mode = settings.value("export/range", 0, type=int)
+        if range_mode == 1:
+            self.radio_custom.setChecked(True)
+            self.spin_start.setValue(settings.value("export/custom_start", 0.0, type=float))
+            self.spin_end.setValue(settings.value("export/custom_end", 10.0, type=float))
+        else:
+            self.radio_entire.setChecked(True)
+            
+        # Load last path
+        last_path = settings.value("export/path", "", type=str)
+        if last_path:
+            dir_name = os.path.dirname(last_path)
+            if os.path.exists(dir_name):
+                is_wav = (self.combo_format.currentIndex() == 0)
+                ext = ".wav" if is_wav else ".mp3"
+                base, _ = os.path.splitext(last_path)
+                self.txt_path.setText(base + ext)
