@@ -2,7 +2,7 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QComboBox, QScrollArea, QFileDialog, QSizePolicy, QMessageBox,
-    QMenu, QDialog
+    QMenu
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor
@@ -12,11 +12,65 @@ from pedalboard import (
 )
 from audio_engine import EffectWrapper
 from widgets.knob import CustomKnob
-from theme_utils import FramelessWindowMixin, CustomTitleBar
 
-class VstDialog(FramelessWindowMixin, QDialog):
-    """Custom frameless wrapper dialog that supports native Win32 dragging and resizing."""
-    pass
+def apply_dark_theme_to_hwnd(hwnd):
+    try:
+        import ctypes
+        dwmapi = ctypes.windll.dwmapi
+        user32 = ctypes.windll.user32
+        
+        # 1. Enable Immersive Dark Mode
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+        use_dark = ctypes.c_int(1)
+        res = dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+            ctypes.byref(use_dark), ctypes.sizeof(use_dark)
+        )
+        if res != 0:
+            dwmapi.DwmSetWindowAttribute(
+                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
+                ctypes.byref(use_dark), ctypes.sizeof(use_dark)
+            )
+            
+        # 2. Customize border and caption colors (Windows 11)
+        # Black titlebar
+        DWMWA_CAPTION_COLOR = 35
+        black_color = ctypes.c_int(0x00000000)
+        dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_CAPTION_COLOR,
+            ctypes.byref(black_color), ctypes.sizeof(black_color)
+        )
+        
+        # White text
+        DWMWA_TEXT_COLOR = 36
+        white_color = ctypes.c_int(0x00FFFFFF)
+        dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_TEXT_COLOR,
+            ctypes.byref(white_color), ctypes.sizeof(white_color)
+        )
+        
+        # Dark gray border (#222225 -> COLORREF is 0x00252222)
+        DWMWA_BORDER_COLOR = 34
+        border_color = ctypes.c_int(0x00252222)
+        dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_BORDER_COLOR,
+            ctypes.byref(border_color), ctypes.sizeof(border_color)
+        )
+        
+        # Force redraw of the window frame
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_NOZORDER = 0x0004
+        SWP_FRAMECHANGED = 0x0020
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+    except Exception as e:
+        print(f"Failed to apply dark theme to hwnd: {e}")
+
+
+# VstDrawerWidget class removed as settings are now tab-integrated
+
+
 
 def scan_for_vst3s(search_paths):
     vst_list = []
@@ -265,209 +319,15 @@ class EffectCard(QFrame):
         if hasattr(self.wrapper.effect, param_name):
             setattr(self.wrapper.effect, param_name, value)
 
-    from PySide6.QtCore import Slot
-    @Slot(int, int)
-    def _resize_vst_dialog(self, w, h):
-        if hasattr(self, 'vst_dialog') and self.vst_dialog:
-            self.vst_dialog.setFixedSize(w, h + 30)
-            title_bar = self.vst_dialog.findChild(QWidget, "CustomTitleBar")
-            if title_bar:
-                title_bar.setGeometry(0, 0, w, 30)
-
     def open_vst_editor(self):
-        try:
-            if not hasattr(self.wrapper.effect, "show_editor"):
-                QMessageBox.warning(self, "VST3 Editor", "This plugin does not support a custom editor interface.")
-                return
-            
-            import platform
-            if platform.system() != "Windows":
-                # Non-Windows: just open directly
+        main_window = self.window()
+        if hasattr(main_window, 'open_vst_in_tab'):
+            main_window.open_vst_in_tab(self, self.wrapper)
+        else:
+            if hasattr(self.wrapper.effect, "show_editor"):
                 self.wrapper.effect.show_editor()
-                return
-            
-            from PySide6.QtCore import Qt
-            import ctypes
-            import ctypes.wintypes
-            
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            current_pid = kernel32.GetCurrentProcessId()
-            
-            # Use pointer-safe window style functions to prevent OverflowError
-            user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-            user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-            user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-            user32.GetWindowLongPtrW.restype = ctypes.c_void_p
-            
-            # Create a VstDialog to host the VST window
-            self.vst_dialog = VstDialog(self)
-            self.vst_dialog.setObjectName("VstSettingsDialog")
-            self.vst_dialog.setWindowTitle(f"{self.wrapper.name} Settings")
-            self.vst_dialog.setWindowFlags(Qt.Window)
-            self.vst_dialog.resize(600, 430) # Initial size + 30px for title bar
-            self.vst_dialog.setStyleSheet("""
-                QDialog {
-                    background-color: #000000;
-                    border: 1px solid #222225;
-                }
-            """)
-            
-            # Add Custom Title Bar
-            title_bar = CustomTitleBar(self.vst_dialog, title_text=f"{self.wrapper.name} Settings", can_minimize=False)
-            title_bar.setObjectName("CustomTitleBar")
-            title_bar.setGeometry(0, 0, 600, 30)
-            title_bar.show()
-            
-            # Initialize native border resizing & dragging
-            self.vst_dialog.init_frameless(title_bar)
-            
-            # Show the dialog immediately
-            self.vst_dialog.show()
-
-            # Restore previous position if we have one
-            if hasattr(self.wrapper, '_last_editor_pos') and self.wrapper._last_editor_pos is not None:
-                self.vst_dialog.move(self.wrapper._last_editor_pos)
-            
-            dialog_hwnd = int(self.vst_dialog.winId())
-            vst_hwnd_ref = [None]
-            original_style_ref = [None]
-            
-            # Ensure the dialog closes the VST when its X button is clicked
-            def on_close(event):
-                # Save the current window position for next time
-                self.wrapper._last_editor_pos = self.vst_dialog.pos()
-                
-                if vst_hwnd_ref[0]:
-                    # Extremely important: Reparent the VST back to the desktop BEFORE the dialog is destroyed.
-                    # Otherwise, destroying the QDialog destroys the VST HWND, breaking it for future opens!
-                    user32.SetParent(vst_hwnd_ref[0], 0)
-                    
-                    # Restore original styles
-                    if original_style_ref[0] is not None:
-                        GWL_STYLE = -16
-                        user32.SetWindowLongPtrW(vst_hwnd_ref[0], GWL_STYLE, ctypes.c_void_p(original_style_ref[0]))
-                    
-                    WM_CLOSE = 0x0010
-                    user32.PostMessageW(vst_hwnd_ref[0], WM_CLOSE, 0, 0)
-                event.accept()
-            self.vst_dialog.closeEvent = on_close
-            
-            # Setup WinEventHook to catch the VST window
-            EVENT_OBJECT_CREATE = 0x8000
-            EVENT_OBJECT_SHOW = 0x8002
-            WINEVENT_OUTOFCONTEXT = 0x0000
-            GA_ROOT = 2
-            
-            WINEVENTPROC = ctypes.WINFUNCTYPE(
-                None, ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.c_void_p,
-                ctypes.wintypes.LONG, ctypes.wintypes.LONG,
-                ctypes.wintypes.DWORD, ctypes.wintypes.DWORD
-            )
-            
-            hook_ref = [None]
-            processed = set()
-            
-            def _win_event_callback(hHook, event, hwnd, idObject, idChild, tid, time):
-                if not hwnd or idObject != 0:
-                    return
-                
-                # Check process
-                pid = ctypes.c_ulong()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                if pid.value != current_pid:
-                    return
-                
-                # Get root window
-                root = user32.GetAncestor(hwnd, GA_ROOT)
-                if not root:
-                    root = hwnd
-                    
-                if root in processed or root == dialog_hwnd:
-                    return
-                
-                class_buf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(root, class_buf, 256)
-                if class_buf.value.startswith("Qt"):
-                    return
-                    
-                length = user32.GetWindowTextLengthW(root)
-                buf = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(root, buf, length + 1)
-                if buf.value == "Graphite":
-                    return
-                
-                # Valid VST window found
-                processed.add(root)
-                vst_hwnd_ref[0] = root
-                
-                class RECT(ctypes.Structure):
-                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-                
-                # Use GetClientRect to get the exact size of the plugin's internal canvas
-                rect = RECT()
-                user32.GetClientRect(root, ctypes.byref(rect))
-                w = rect.right - rect.left
-                h = rect.bottom - rect.top
-                
-                # Strip native borders/popups and add child style
-                GWL_STYLE = -16
-                WS_POPUP = 0x80000000
-                WS_CAPTION = 0x00C00000
-                WS_THICKFRAME = 0x00040000
-                WS_CHILD = 0x40000000
-                
-                # Use pointer-safe version to read style
-                style_ptr = user32.GetWindowLongPtrW(root, GWL_STYLE)
-                # Convert void_p to int
-                style = ctypes.cast(style_ptr, ctypes.c_void_p).value
-                if style is None:
-                    style = 0
-                
-                original_style_ref[0] = style
-                
-                style = (style & ~WS_POPUP & ~WS_CAPTION & ~WS_THICKFRAME) | WS_CHILD
-                user32.SetWindowLongPtrW(root, GWL_STYLE, ctypes.c_void_p(style))
-                
-                # Embed inside the QDialog
-                user32.SetParent(root, dialog_hwnd)
-                
-                # Position it perfectly inside the QDialog client area (starting at y=30)
-                SWP_NOZORDER = 0x0004
-                SWP_FRAMECHANGED = 0x0020
-                SWP_SHOWWINDOW = 0x0040
-                user32.SetWindowPos(root, 0, 0, 30, w, h, SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW)
-                
-                # Lock the Qt Dialog strictly to the VST's internal size
-                from PySide6.QtCore import QMetaObject, Qt, Q_ARG
-                QMetaObject.invokeMethod(self, "_resize_vst_dialog", Qt.QueuedConnection, Q_ARG(int, w), Q_ARG(int, h))
-                
-                if hook_ref[0]:
-                    user32.UnhookWinEvent(hook_ref[0])
-                    hook_ref[0] = None
-
-            self._vst_hook_cb = WINEVENTPROC(_win_event_callback)
-            hook_ref[0] = user32.SetWinEventHook(
-                EVENT_OBJECT_CREATE, EVENT_OBJECT_SHOW,
-                None, self._vst_hook_cb, 0, 0, WINEVENT_OUTOFCONTEXT
-            )
-            
-            # show_editor() will block, but its message loop will dispatch our hook and keep the QDialog responsive
-            self.wrapper.effect.show_editor()
-            
-            # Cleanup
-            if hook_ref[0]:
-                user32.UnhookWinEvent(hook_ref[0])
-                hook_ref[0] = None
-            self._vst_hook_cb = None
-            
-            # Close the wrapper dialog if it's still open
-            if self.vst_dialog.isVisible():
-                self.vst_dialog.close()
-                
-        except Exception as e:
-            QMessageBox.critical(self, "VST3 Editor Error", f"Failed to open editor: {e}")
+            else:
+                QMessageBox.warning(self, "VST3 Editor", "This plugin does not support a custom editor interface.")
             
     def on_delete_clicked(self):
         self.track.effects.remove(self.wrapper)

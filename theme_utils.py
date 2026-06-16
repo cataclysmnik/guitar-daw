@@ -38,8 +38,21 @@ class FramelessWindowMixin:
         self.title_bar = title_bar_widget
         self.border_width = border_width
         
-        # On non-Windows platforms, we fall back to standard frameless window mode
-        if platform.system() != "Windows":
+        if platform.system() == "Windows":
+            # Force Windows to recalculate the frame size and trigger WM_NCCALCSIZE immediately
+            try:
+                hwnd = int(self.winId())
+                user32 = ctypes.windll.user32
+                user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+                SWP_NOMOVE = 0x0002
+                SWP_NOSIZE = 0x0001
+                SWP_NOZORDER = 0x0004
+                SWP_FRAMECHANGED = 0x0020
+                user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+            except Exception as e:
+                pass
+        else:
+            # On non-Windows platforms, we fall back to standard frameless window mode
             self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
 
     def nativeEvent(self, eventType, message):
@@ -75,7 +88,8 @@ class FramelessWindowMixin:
                 x = msg.pt.x
                 y = msg.pt.y
                 if hasattr(self, 'title_bar') and self.title_bar:
-                    local_pos = self.title_bar.mapFromGlobal(QPoint(x, y))
+                    dpi = self.devicePixelRatioF() if hasattr(self, 'devicePixelRatioF') else 1.0
+                    local_pos = self.title_bar.mapFromGlobal(QPoint(int(x / dpi), int(y / dpi)))
                     if self.title_bar.rect().contains(local_pos):
                         # Keep control buttons active under Qt
                         over_button = False

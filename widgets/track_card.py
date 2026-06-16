@@ -367,6 +367,8 @@ class TrackCard(QFrame):
 
     def set_selected(self, selected):
         """Sets selected state and updates dynamic styles."""
+        if self.is_selected == selected:
+            return
         self.is_selected = selected
         self.setProperty("selected", selected)
         self.style().unpolish(self)
