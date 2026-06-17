@@ -258,21 +258,30 @@ class ChannelStrip(QWidget):
         f.setStyleSheet(f"color:{SEP_COLOR}; background:{SEP_COLOR}; max-width:1px;")
         return f
 
+    def mark_dirty(self):
+        main_win = self.window()
+        if main_win and hasattr(main_win, 'mark_project_dirty'):
+            main_win.mark_project_dirty()
+
     def _on_fader(self, v):
         if self._guard:
             return
         db = v / 10.0
         self.track.volume = db
         self._refresh_db(db)
+        self.mark_dirty()
 
     def _on_pan(self, v):
         self.track.pan = v
+        self.mark_dirty()
 
     def _on_mute(self):
         self.track.mute = self.btn_mute.isChecked()
+        self.mark_dirty()
 
     def _on_solo(self):
         self.track.solo = self.btn_solo.isChecked()
+        self.mark_dirty()
 
     def _refresh_db(self, db):
         self.lbl_db.setText("-∞ dB" if db <= -60.0 else f"{db:+.1f} dB")

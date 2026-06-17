@@ -398,30 +398,41 @@ class TrackCard(QFrame):
         self.btn_solo.setVisible(True)
         self.btn_arm.setVisible(True)
         
+    def mark_dirty(self):
+        main_win = self.window()
+        if main_win and hasattr(main_win, 'mark_project_dirty'):
+            main_win.mark_project_dirty()
+
     def on_rename(self):
         new_name = self.name_edit.text().strip()
         if new_name:
             self.track.name = new_name
             self.update()
+            self.mark_dirty()
             
     def on_mute_clicked(self):
         self.track.mute = self.btn_mute.isChecked()
+        self.mark_dirty()
         
     def on_solo_clicked(self):
         self.track.solo = self.btn_solo.isChecked()
+        self.mark_dirty()
         
     def on_arm_clicked(self):
         self.track.armed = self.btn_arm.isChecked()
+        self.mark_dirty()
         
     def on_input_changed(self):
         ch_data = self.combo_input.currentData()
         if ch_data is not None:
             self.track.input_channel = ch_data
+            self.mark_dirty()
             
     def on_volume_changed(self):
         val_db = self.vol_slider.value() / 10.0
         self.track.volume = val_db
         self.update_volume_label(val_db)
+        self.mark_dirty()
         
     def update_volume_label(self, val_db):
         if val_db <= -60.0:
@@ -431,6 +442,7 @@ class TrackCard(QFrame):
             
     def on_pan_changed(self, value):
         self.track.pan = value
+        self.mark_dirty()
         
 
         

@@ -2,7 +2,8 @@ import os
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QFileDialog, QSplitter, QSlider,
-    QMessageBox, QTabWidget, QFrame, QMenuBar, QSizeGrip, QStackedWidget
+    QMessageBox, QTabWidget, QFrame, QMenuBar, QSizeGrip, QStackedWidget,
+    QApplication
 )
 from PySide6.QtCore import Qt, QTimer, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QIcon, QAction, QKeySequence
@@ -167,6 +168,8 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         
         self.track_cards = []
         self.selected_track = None
+        self.current_project_path = None
+        self.project_dirty = False
         
         # VST Embedded Settings state attributes
         self._vst_hwnd = None
@@ -217,6 +220,28 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         
         if splash:
             splash.set_status("Graphite ready!", 100)
+        self.update_title_bar()
+        
+    def update_title_bar(self, status=None):
+        if not hasattr(self, 'title_bar') or not self.title_bar:
+            return
+        title = "GRAPHITE"
+        if hasattr(self, 'current_project_path') and self.current_project_path:
+            project_name = os.path.basename(self.current_project_path)
+            project_name = os.path.splitext(project_name)[0]
+            title += f" — {project_name}"
+        else:
+            title += " — [UNTITLED]"
+        if hasattr(self, 'project_dirty') and self.project_dirty:
+            title += " *"
+        if status:
+            title += f" [{status}]"
+        self.title_bar.title_label.setText(title.upper())
+
+    def mark_project_dirty(self):
+        if not hasattr(self, 'project_dirty') or not self.project_dirty:
+            self.project_dirty = True
+            self.update_title_bar()
         
     def setup_ui(self):
         # Main central widget
@@ -745,6 +770,11 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             card.deleteLater()
         self.track_cards.clear()
         
+        if hasattr(self, 'btn_add_track') and self.btn_add_track:
+            self.tracks_layout.removeWidget(self.btn_add_track)
+            self.btn_add_track.deleteLater()
+            self.btn_add_track = None
+        
         # Build cards for each track in audio engine
         for track in self.audio_engine.tracks:
             card = TrackCard(track, self.audio_engine)
@@ -755,6 +785,32 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             self.tracks_layout.insertWidget(self.tracks_layout.count() - 1, card)
             card.setFixedHeight(self.track_height)
             self.track_cards.append(card)
+            
+        # Add the "+" button at the end
+        self.btn_add_track = QPushButton("+ ADD TRACK")
+        self.btn_add_track.setObjectName("AddTrackButton")
+        self.btn_add_track.setFixedHeight(30)
+        self.btn_add_track.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_track.clicked.connect(self.on_add_track_clicked)
+        self.btn_add_track.setStyleSheet("""
+            QPushButton#AddTrackButton {
+                background-color: #0b0b0c;
+                color: #88888c;
+                border: 1px dashed #333333;
+                border-radius: 4px;
+                font-family: "Consolas", monospace;
+                font-weight: bold;
+                font-size: 10px;
+                letter-spacing: 0.5px;
+                margin: 5px 10px;
+            }
+            QPushButton#AddTrackButton:hover {
+                background-color: #151518;
+                color: #ffffff;
+                border: 1px solid #ff0033;
+            }
+        """)
+        self.tracks_layout.insertWidget(self.tracks_layout.count() - 1, self.btn_add_track)
             
         # Select first track if available
         if self.track_cards:
@@ -768,6 +824,12 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
         if hasattr(self, 'mixer_widget'):
             self.mixer_widget.rebuild()
+
+    def on_add_track_clicked(self):
+        new_track_idx = len(self.audio_engine.tracks) + 1
+        self.audio_engine.add_track(f"Track {new_track_idx}")
+        self.refresh_track_cards()
+        self.mark_project_dirty()
 
     def calculate_drop_line_y(self, drop_y):
         if not self.track_cards:
@@ -968,6 +1030,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         
         # Rebuild GUI track cards list
         self.refresh_track_cards()
+        self.mark_project_dirty()
         
         # Select the newly duplicated track card
         for card in self.track_cards:
@@ -994,6 +1057,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             
             # Remove from engine
             self.audio_engine.remove_track(track.track_id)
+            self.mark_project_dirty()
             
             # Reset selection if deleted track was active
             if self.selected_track == track:
@@ -1190,6 +1254,9 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 self.audio_engine.tracks.clear()
                 self.audio_engine.main_volume = 0.0
                 self.audio_engine.demo_loop_active = False
+            self.current_project_path = None
+            self.project_dirty = False
+            self.update_title_bar()
             if hasattr(self, 'mixer_widget') and hasattr(self.mixer_widget, 'master'):
                 self.mixer_widget.master.update_volume_ui()
             self.action_demo.setChecked(False)
@@ -1215,8 +1282,25 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             file_path = dlg.selectedFiles()[0]
             if not file_path.endswith(".graphite"):
                 file_path += ".graphite"
-            success = project_manager.save_project(file_path, self.audio_engine)
+                
+            QApplication.processEvents()
+            
+            from widgets.loading_popup import LoadingPopup
+            popup = LoadingPopup("SAVING GRAPHITE PROJECT...", self)
+            popup.show()
+            QApplication.processEvents()
+            
+            try:
+                success = project_manager.save_project(file_path, self.audio_engine)
+            finally:
+                popup.hide()
+                popup.close()
+                QApplication.processEvents()
+                
             if success:
+                self.current_project_path = file_path
+                self.project_dirty = False
+                self.update_title_bar()
                 self.show_themed_message_box(
                     "Project Saved",
                     f"Successfully saved session to:\n{os.path.basename(file_path)}",
@@ -1246,8 +1330,25 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         
         if dlg.exec() == QFileDialog.DialogCode.Accepted:
             file_path = dlg.selectedFiles()[0]
-            success = project_manager.load_project(file_path, self.audio_engine)
+            
+            QApplication.processEvents()
+            
+            from widgets.loading_popup import LoadingPopup
+            popup = LoadingPopup("LOADING GRAPHITE PROJECT...", self)
+            popup.show()
+            QApplication.processEvents()
+            
+            try:
+                success = project_manager.load_project(file_path, self.audio_engine)
+            finally:
+                popup.hide()
+                popup.close()
+                QApplication.processEvents()
+                
             if success:
+                self.current_project_path = file_path
+                self.project_dirty = False
+                self.update_title_bar()
                 # Rebuild cards and GUI state
                 self.refresh_track_cards()
                 if hasattr(self, 'mixer_widget') and hasattr(self.mixer_widget, 'master'):

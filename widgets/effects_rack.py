@@ -695,6 +695,7 @@ class EffectsRack(QWidget):
                     self.selected_track.effects.remove(new_wrapper)
                     raise e
                 self.refresh_rack()
+                self.mark_dirty()
                 if self.signal_flow_widget:
                     self.signal_flow_widget.refresh_flow()
         except Exception as e:
@@ -771,6 +772,7 @@ class EffectsRack(QWidget):
             self.selected_track.effects.insert(new_index, dragged_wrapper)
             self.selected_track.update_pedalboard(self.audio_engine.sample_rate)
             self.refresh_rack()
+            self.mark_dirty()
             new_cards = []
             for i in range(self.scroll_layout.count()):
                 item = self.scroll_layout.itemAt(i)
@@ -844,6 +846,7 @@ class EffectsRack(QWidget):
         for wrapper in self.selected_track.effects:
             card = EffectCard(wrapper, self.selected_track)
             card.effectChanged.connect(self.refresh_rack)
+            card.effectChanged.connect(self.mark_dirty)
             card.effectDuplicated.connect(self.on_effect_duplicated)
             self.scroll_layout.insertWidget(self.scroll_layout.count() - 1, card)
             
@@ -852,6 +855,11 @@ class EffectsRack(QWidget):
                 selected_card = card
             else:
                 card.set_selected(False)
+                
+    def mark_dirty(self):
+        main_win = self.window()
+        if main_win and hasattr(main_win, 'mark_project_dirty'):
+            main_win.mark_project_dirty()
                 
     def on_combo_fx_activated(self, index):
         if not self.selected_track:
@@ -905,6 +913,7 @@ class EffectsRack(QWidget):
                 self.selected_track.effects.remove(wrapper)
                 raise e
             self.refresh_rack()
+            self.mark_dirty()
 
     def show_vst_menu_at(self, global_pos):
         self.populate_vst_menu()
@@ -975,6 +984,7 @@ class EffectsRack(QWidget):
             self.selected_track.effects.clear()
             self.selected_track.update_pedalboard(self.audio_engine.sample_rate if self.audio_engine else 44100)
             self.refresh_rack()
+            self.mark_dirty()
             
     def on_load_vst3(self):
         if not self.selected_track:
@@ -1034,12 +1044,21 @@ class EffectsRack(QWidget):
         if not self.selected_track:
             return
             
+        main_window = self.window()
+        from widgets.loading_popup import LoadingPopup
+        popup = LoadingPopup(f"LOADING VST PLUGIN:\n{os.path.basename(file_path).upper()}", main_window)
+        popup.show()
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+        
         was_running = False
         if self.audio_engine:
             was_running = self.audio_engine.is_running
             self.audio_engine.stop_stream()
             
         try:
+            if popup.was_cancelled:
+                return
             from audio_engine import load_vst_plugin
             vst_obj = load_vst_plugin(file_path)
             filename = os.path.splitext(os.path.basename(file_path))[0]
@@ -1054,13 +1073,16 @@ class EffectsRack(QWidget):
                 raise e
             
             self.refresh_rack()
+            
+            if hasattr(main_window, 'mark_project_dirty'):
+                main_window.mark_project_dirty()
         except Exception as e:
-            main_window = self.window()
             err_text = f"Failed to load VST3 plugin at {file_path}.\n\nError details: {e}"
             if hasattr(main_window, 'show_themed_message_box'):
                 main_window.show_themed_message_box("VST3 Error", err_text, QMessageBox.Icon.Critical)
             else:
                 QMessageBox.warning(self, "VST3 Error", err_text)
         finally:
+            popup.close()
             if was_running and self.audio_engine:
                 self.audio_engine.start_stream()

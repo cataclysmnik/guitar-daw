@@ -16,8 +16,8 @@ class AudioSettingsDialog(FramelessWindowMixin, QDialog):
         super().__init__(parent)
         self.audio_engine = audio_engine
         
-        self.setWindowTitle("Audio device settings")
-        self.setMinimumSize(520, 640)
+        self.setWindowTitle("Settings")
+        self.setMinimumSize(520, 500)  # Lower minimum height now that it scrolls
         self.setObjectName("AudioSettingsDialog")
         
         self.setup_ui()
@@ -34,10 +34,17 @@ class AudioSettingsDialog(FramelessWindowMixin, QDialog):
         import os
         sys.path.append(os.path.dirname(os.path.dirname(__file__)))
         from theme_utils import CustomTitleBar
-        self.title_bar = CustomTitleBar(self, title_text="AUDIO DEVICE SETTINGS", can_minimize=False)
+        self.title_bar = CustomTitleBar(self, title_text="SETTINGS", can_minimize=False)
         main_layout.addWidget(self.title_bar)
         
-        content_widget = QWidget(self)
+        from PySide6.QtWidgets import QScrollArea, QFrame
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        content_widget = QWidget(self.scroll_area)
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(15, 15, 15, 15)
         content_layout.setSpacing(12)
@@ -287,15 +294,20 @@ class AudioSettingsDialog(FramelessWindowMixin, QDialog):
         
         content_layout.addWidget(startup_group)
 
-        # OK / CANCEL BUTTONS
+        # OK / CANCEL BUTTONS (outside scroll area)
+        buttons_widget = QWidget(self)
+        buttons_layout = QHBoxLayout(buttons_widget)
+        buttons_layout.setContentsMargins(15, 5, 15, 15)
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         self.button_box.accepted.connect(self.on_accept)
         self.button_box.rejected.connect(self.reject)
-        content_layout.addWidget(self.button_box)
+        buttons_layout.addWidget(self.button_box)
         
-        main_layout.addWidget(content_widget)
+        self.scroll_area.setWidget(content_widget)
+        main_layout.addWidget(self.scroll_area)
+        main_layout.addWidget(buttons_widget)
         
         # Stylesheet styling to match Nothing design aesthetic
         self.setStyleSheet("""
@@ -303,6 +315,27 @@ class AudioSettingsDialog(FramelessWindowMixin, QDialog):
                 background-color: #000000;
                 color: #ffffff;
                 border: 1px solid #222225;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #000000;
+                width: 8px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #222225;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #ff0033;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
             QGroupBox#SettingsGroupBox {
                 border: 1px solid #333333;
