@@ -18,6 +18,58 @@ from widgets.mixer import MixerWidget
 from widgets.signal_flow import SignalFlowWidget
 import project_manager
 
+class TracksContainer(QWidget):
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+        self.setAcceptDrops(True)
+        self.drop_indicator_y = None
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasText():
+            drop_pos = event.position().toPoint()
+            self.drop_indicator_y = self.main_window.calculate_drop_line_y(drop_pos.y())
+            self.update()
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.drop_indicator_y = None
+        self.update()
+        event.accept()
+
+    def dropEvent(self, event):
+        track_id_str = event.mimeData().text()
+        try:
+            track_id = int(track_id_str)
+        except ValueError:
+            event.ignore()
+            return
+            
+        drop_pos = event.position().toPoint()
+        self.drop_indicator_y = None
+        self.update()
+        self.main_window.reorder_tracks(track_id, drop_pos.y())
+        event.acceptProposedAction()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.drop_indicator_y is not None:
+            from PySide6.QtGui import QPainter, QPen, QColor
+            painter = QPainter(self)
+            try:
+                painter.setPen(QPen(QColor("#ffffff"), 2.0, Qt.PenStyle.SolidLine))
+                painter.drawLine(0, self.drop_indicator_y, self.width(), self.drop_indicator_y)
+            finally:
+                painter.end()
+
 from theme_utils import FramelessWindowMixin
 
 def apply_dark_theme_to_hwnd(hwnd):
@@ -273,10 +325,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self.tracks_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.tracks_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        self.tracks_container = QWidget()
+        self.tracks_container = TracksContainer(self)
         self.tracks_container.setObjectName("TracksContainer")
         self.tracks_layout = QVBoxLayout(self.tracks_container)
-        self.tracks_layout.setContentsMargins(0, 30, 0, 0)  # Offset 30px top margin to align with Timeline Ruler
+        self.tracks_layout.setContentsMargins(0, 0, 0, 0)
         self.tracks_layout.setSpacing(10)
         self.tracks_layout.addStretch()
         
@@ -303,7 +355,17 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         
         self._dock_pinned = True
         
-        self.btn_dock_pin = QPushButton("📌 PINNED")
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icons_dir = os.path.join(base_dir, "public", "icons")
+        from PySide6.QtGui import QIcon
+        from PySide6.QtCore import QSize
+        self.icon_pin = QIcon(os.path.join(icons_dir, "pin.svg"))
+        self.icon_unpin = QIcon(os.path.join(icons_dir, "unpin.svg"))
+        
+        self.btn_dock_pin = QPushButton()
+        self.btn_dock_pin.setIcon(self.icon_pin)
+        self.btn_dock_pin.setIconSize(QSize(14, 14))
         self.btn_dock_pin.setObjectName("DockPinBtn")
         self.btn_dock_pin.setFixedHeight(24)
         self.btn_dock_pin.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -319,7 +381,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self._dock_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._dock_anim.valueChanged.connect(self._on_dock_anim_value)
         
-        self.btn_dock_toggle = QPushButton("▼ HIDE")
+        self.btn_dock_toggle = QPushButton("▼")
         self.btn_dock_toggle.setObjectName("DockToggleBtn")
         self.btn_dock_toggle.setFixedHeight(24)
         self.btn_dock_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -674,7 +736,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             card = TrackCard(track, self.audio_engine)
             card.trackSelected.connect(self.on_track_selected)
             card.trackRemoved.connect(self.on_track_removed)
-            card.btn_fx.clicked.connect(lambda t=track: self.focus_fx_rack(t))
+            card.trackDuplicated.connect(self.on_track_duplicated)
             
             self.tracks_layout.insertWidget(self.tracks_layout.count() - 1, card)
             card.setFixedHeight(self.track_height)
@@ -689,6 +751,112 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             
         if hasattr(self, 'timeline'):
             self.timeline.update_track_layout()
+
+    def calculate_drop_line_y(self, drop_y):
+        if not self.track_cards:
+            return 30
+            
+        for card in self.track_cards:
+            card_geom = card.geometry()
+            card_y_center = card_geom.y() + card_geom.height() / 2
+            if drop_y < card_y_center:
+                return card_geom.y() - 5
+                
+        last_card_geom = self.track_cards[-1].geometry()
+        return last_card_geom.y() + last_card_geom.height() + 5
+
+    def reorder_tracks(self, dragged_track_id, drop_y):
+        # Find the card being dragged
+        dragged_card = None
+        for card in self.track_cards:
+            if card.track.track_id == dragged_track_id:
+                dragged_card = card
+                break
+                
+        if not dragged_card:
+            return
+            
+        # Determine the new index in self.track_cards list based on drop_y
+        new_index = 0
+        inserted = False
+        for i, card in enumerate(self.track_cards):
+            if card == dragged_card:
+                continue
+            card_y_center = card.geometry().y() + card.geometry().height() / 2
+            if drop_y < card_y_center:
+                new_index = i
+                inserted = True
+                break
+                
+        if not inserted:
+            new_index = len(self.track_cards) - 1
+            if new_index < 0:
+                new_index = 0
+                
+        old_index = self.track_cards.index(dragged_card)
+        if old_index == new_index:
+            return
+            
+        # Reorder with smooth height transition animations
+        # 1. Collapse height at old position
+        self.reorder_anim = QVariantAnimation(self)
+        self.reorder_anim.setDuration(120)
+        self.reorder_anim.setStartValue(self.track_height)
+        self.reorder_anim.setEndValue(0)
+        
+        def on_collapse_val(val):
+            dragged_card.setFixedHeight(val)
+            
+        self.reorder_anim.valueChanged.connect(on_collapse_val)
+        
+        def on_collapse_finished():
+            self.reorder_anim.valueChanged.disconnect()
+            try:
+                self.reorder_anim.finished.disconnect()
+            except RuntimeError:
+                pass
+                
+            # Perform list reorder
+            self.track_cards.remove(dragged_card)
+            self.track_cards.insert(new_index, dragged_card)
+            
+            dragged_track = dragged_card.track
+            self.audio_engine.tracks.remove(dragged_track)
+            self.audio_engine.tracks.insert(new_index, dragged_track)
+            
+            # Rebuild layout
+            for card in self.track_cards:
+                self.tracks_layout.removeWidget(card)
+            for i, card in enumerate(self.track_cards):
+                self.tracks_layout.insertWidget(i, card)
+                
+            # 2. Expand height at new position
+            self.reorder_anim_expand = QVariantAnimation(self)
+            self.reorder_anim_expand.setDuration(120)
+            self.reorder_anim_expand.setStartValue(0)
+            self.reorder_anim_expand.setEndValue(self.track_height)
+            
+            def on_expand_val(val):
+                dragged_card.setFixedHeight(val)
+                
+            self.reorder_anim_expand.valueChanged.connect(on_expand_val)
+            
+            def on_expand_finished():
+                dragged_card.setFixedHeight(self.track_height)
+                # Final update
+                if hasattr(self, 'timeline'):
+                    self.timeline.update_track_layout()
+                    self.timeline.lanes.update()
+                    
+            self.reorder_anim_expand.finished.connect(on_expand_finished)
+            self.reorder_anim_expand.start()
+            
+            if hasattr(self, 'timeline'):
+                self.timeline.update_track_layout()
+                self.timeline.lanes.update()
+                
+        self.reorder_anim.finished.connect(on_collapse_finished)
+        self.reorder_anim.start()
 
     def on_track_selected(self, track):
         """Deselects other cards and selects this track."""
@@ -715,7 +883,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         card = TrackCard(new_track, self.audio_engine)
         card.trackSelected.connect(self.on_track_selected)
         card.trackRemoved.connect(self.on_track_removed)
-        card.btn_fx.clicked.connect(lambda t=new_track: self.focus_fx_rack(t))
+        card.trackDuplicated.connect(self.on_track_duplicated)
         
         self.tracks_layout.insertWidget(self.tracks_layout.count() - 1, card)
         self.track_cards.append(card)
@@ -728,6 +896,71 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         if hasattr(self, 'mixer_widget'):
             self.mixer_widget.rebuild()
         
+    def on_track_duplicated(self, track):
+        new_name = f"{track.name} (Copy)"
+        new_track = self.audio_engine.add_track(name=new_name)
+        
+        # Move new_track in audio_engine.tracks right after track
+        self.audio_engine.tracks.remove(new_track)
+        target_idx = -1
+        for i, t in enumerate(self.audio_engine.tracks):
+            if t == track:
+                target_idx = i
+                break
+        if target_idx != -1:
+            self.audio_engine.tracks.insert(target_idx + 1, new_track)
+        else:
+            self.audio_engine.tracks.append(new_track)
+            
+        # Duplicate basic properties
+        new_track.volume = track.volume
+        new_track.pan = track.pan
+        new_track.mute = track.mute
+        new_track.solo = track.solo
+        new_track.armed = track.armed
+        new_track.input_channel = track.input_channel
+        
+        # Duplicate items (clips)
+        from audio_engine import AudioItem
+        with track.lock:
+            for item in track.items:
+                audio_data_copy = item.audio_data.copy() if item.audio_data is not None else None
+                duplicated_item = AudioItem(
+                    start_sample=item.start_sample,
+                    sample_rate=item.sample_rate,
+                    file_path=item.file_path,
+                    audio_data=audio_data_copy
+                )
+                duplicated_item.offset_samples = item.offset_samples
+                duplicated_item.length_samples = item.length_samples
+                new_track.items.append(duplicated_item)
+                
+        # Duplicate effects
+        import project_manager
+        for fx in track.effects:
+            try:
+                serialized = project_manager.serialize_effect(fx)
+                duplicated_fx = project_manager.deserialize_effect(serialized)
+                if duplicated_fx:
+                    new_track.effects.append(duplicated_fx)
+            except Exception as e:
+                print(f"Error duplicating effect: {e}")
+                
+        # Re-build pedalboard
+        new_track.update_pedalboard(self.audio_engine.sample_rate)
+        
+        # Rebuild GUI track cards list
+        self.refresh_track_cards()
+        
+        # Select the newly duplicated track card
+        for card in self.track_cards:
+            if card.track == new_track:
+                card.set_selected(True)
+                break
+                
+        if hasattr(self, 'mixer_widget'):
+            self.mixer_widget.rebuild()
+
     def on_track_removed(self, track):
         """Deletes a track from engine and UI."""
         # Find card
@@ -842,7 +1075,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             self._dock_anim.setStartValue(current_bottom)
             self._dock_anim.setEndValue(target)
             self._dock_collapsed = False
-            self.btn_dock_toggle.setText("▼ HIDE")
+            self.btn_dock_toggle.setText("▼")
         else:
             # Collapse: save current height
             if current_bottom > tab_h + 10:
@@ -850,7 +1083,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             self._dock_anim.setStartValue(current_bottom)
             self._dock_anim.setEndValue(tab_h)
             self._dock_collapsed = True
-            self.btn_dock_toggle.setText("▲ SHOW")
+            self.btn_dock_toggle.setText("▲")
 
         self._dock_anim.start()
 
@@ -866,10 +1099,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     def toggle_dock_pin(self):
         self._dock_pinned = not self._dock_pinned
         if self._dock_pinned:
-            self.btn_dock_pin.setText("📌 PINNED")
+            self.btn_dock_pin.setIcon(self.icon_pin)
             self.expand_dock()
         else:
-            self.btn_dock_pin.setText("📍 UNPINNED")
+            self.btn_dock_pin.setIcon(self.icon_unpin)
 
     def check_auto_hide(self):
         if self._dock_pinned:
@@ -1270,7 +1503,19 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         if index != 1:  # Not on Effects tab
             if self.active_vst_card:
                 self.close_active_vst(switch_tab=False)
+    def on_fast_forward(self):
+        """Moves playhead to the end of the longest recorded clip."""
+        longest_sample = 0
+        for track in self.audio_engine.tracks:
+            for item in track.items:
+                end_sample = item.start_sample + item.length_samples
+                if end_sample > longest_sample:
+                    longest_sample = end_sample
+        self.audio_engine.playhead_samples = longest_sample
+        if hasattr(self, 'timeline'):
+            self.timeline.update_widgets()
 
+    # --- THEMED MESSAGE BOX ---
     def show_themed_message_box(self, title, text, icon=QMessageBox.Icon.Information, buttons=QMessageBox.StandardButton.Ok):
         msg = QMessageBox(self)
         msg.setWindowTitle(title)

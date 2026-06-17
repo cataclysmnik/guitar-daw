@@ -382,8 +382,8 @@ class MasterStrip(QWidget):
         self.lbl_db.setText("-∞ dB" if db <= -60.0 else f"{db:+.1f} dB")
 
     def tick(self, level):
-        self.meter_l.set_level(level)
-        self.meter_r.set_level(level)
+        self.meter_l.set_level(level[0])
+        self.meter_r.set_level(level[1])
 
     def _apply_style(self):
         self.setStyleSheet(f"""
@@ -493,9 +493,7 @@ class MixerWidget(QWidget):
     def _tick(self):
         for s in self.strips:
             s.tick()
-        active = [t for t in self.audio_engine.tracks if not t.mute]
-        avg = sum(t.level_history for t in active) / len(active) if active else -80.0
-        self.master.tick(avg)
+        self.master.tick(self.audio_engine.main_level_history)
 
     def _apply_style(self):
         self.setStyleSheet(f"""

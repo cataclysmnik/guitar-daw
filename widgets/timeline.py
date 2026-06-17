@@ -169,6 +169,7 @@ class TimelineLanesWidget(QWidget):
         
         self.selected_item = None
         self.selected_track_for_item = None
+        self.clipboard_clip = None
         
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -318,6 +319,19 @@ class TimelineLanesWidget(QWidget):
                 new_start = max(0, new_start)
                 with self.drag_track.lock:
                     self.active_drag_item.start_sample = new_start
+                    
+                # Shift clip between tracks when dragging vertically
+                target_track_idx = int(y // self.lane_height)
+                target_track_idx = max(0, min(len(self.audio_engine.tracks) - 1, target_track_idx))
+                target_track = self.audio_engine.tracks[target_track_idx]
+                if target_track != self.drag_track:
+                    with self.drag_track.lock:
+                        if self.active_drag_item in self.drag_track.items:
+                            self.drag_track.items.remove(self.active_drag_item)
+                    with target_track.lock:
+                        target_track.items.append(self.active_drag_item)
+                    self.drag_track = target_track
+                    self.selected_track_for_item = target_track
             
             elif self.active_drag_mode == "resize_left":
                 timeline_end = self.drag_start_sample + self.drag_length_samples
@@ -421,6 +435,61 @@ class TimelineLanesWidget(QWidget):
                 self.selected_item = None
                 self.selected_track_for_item = None
                 self.update_geometry()
+                self.update()
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_C:
+                if self.selected_item:
+                    self.clipboard_clip = {
+                        "file_path": self.selected_item.file_path,
+                        "audio_data": self.selected_item.audio_data.copy() if self.selected_item.audio_data is not None else None,
+                        "offset_samples": self.selected_item.offset_samples,
+                        "length_samples": self.selected_item.length_samples,
+                        "sample_rate": self.selected_item.sample_rate
+                    }
+            elif event.key() == Qt.Key.Key_X:
+                if self.selected_item and self.selected_track_for_item:
+                    self.clipboard_clip = {
+                        "file_path": self.selected_item.file_path,
+                        "audio_data": self.selected_item.audio_data.copy() if self.selected_item.audio_data is not None else None,
+                        "offset_samples": self.selected_item.offset_samples,
+                        "length_samples": self.selected_item.length_samples,
+                        "sample_rate": self.selected_item.sample_rate
+                    }
+                    track = self.selected_track_for_item
+                    item = self.selected_item
+                    with track.lock:
+                        if item in track.items:
+                            track.items.remove(item)
+                    self.selected_item = None
+                    self.selected_track_for_item = None
+                    self.update_geometry()
+                    self.update()
+            elif event.key() == Qt.Key.Key_V:
+                if hasattr(self, 'clipboard_clip') and self.clipboard_clip is not None:
+                    target_track = None
+                    if self.main_window and self.main_window.selected_track:
+                        target_track = self.main_window.selected_track
+                    elif self.audio_engine.tracks:
+                        target_track = self.audio_engine.tracks[0]
+                        
+                    if target_track:
+                        from audio_engine import AudioItem
+                        new_item = AudioItem(
+                            start_sample=self.audio_engine.playhead_samples,
+                            sample_rate=self.clipboard_clip["sample_rate"],
+                            file_path=self.clipboard_clip["file_path"],
+                            audio_data=self.clipboard_clip["audio_data"].copy() if self.clipboard_clip["audio_data"] is not None else None
+                        )
+                        new_item.offset_samples = self.clipboard_clip["offset_samples"]
+                        new_item.length_samples = self.clipboard_clip["length_samples"]
+                        
+                        with target_track.lock:
+                            target_track.items.append(new_item)
+                            
+                        self.selected_item = new_item
+                        self.selected_track_for_item = target_track
+                        self.update_geometry()
+                        self.update()
         else:
             super().keyPressEvent(event)
             
@@ -692,8 +761,19 @@ class TimelineScrollContainer(QWidget):
         icon_play = QIcon(os.path.join(icons_dir, "play.svg"))
         icon_pause = QIcon(os.path.join(icons_dir, "pause.svg"))
         icon_record = QIcon(os.path.join(icons_dir, "record.svg"))
+        icon_prev = QIcon(os.path.join(icons_dir, "previous.svg"))
+        icon_ff = QIcon(os.path.join(icons_dir, "fastforward.svg"))
         
         icon_size = QSize(12, 12)
+        
+        self.btn_prev = QPushButton()
+        self.btn_prev.setIcon(icon_prev)
+        self.btn_prev.setIconSize(icon_size)
+        self.btn_prev.setObjectName("TransportButton")
+        self.btn_prev.setToolTip("Previous / Go to Start")
+        if self.main_window:
+            self.btn_prev.clicked.connect(self.main_window.on_transport_stop)
+        tb_layout.addWidget(self.btn_prev)
         
         self.btn_stop = QPushButton()
         self.btn_stop.setIcon(icon_stop)
@@ -716,6 +796,15 @@ class TimelineScrollContainer(QWidget):
         if self.main_window:
             self.btn_play_pause.clicked.connect(self.main_window.toggle_play_pause)
         tb_layout.addWidget(self.btn_play_pause)
+        
+        self.btn_ff = QPushButton()
+        self.btn_ff.setIcon(icon_ff)
+        self.btn_ff.setIconSize(QSize(18, 18))
+        self.btn_ff.setObjectName("TransportButton")
+        self.btn_ff.setToolTip("Fast Forward to End")
+        if self.main_window:
+            self.btn_ff.clicked.connect(self.main_window.on_fast_forward)
+        tb_layout.addWidget(self.btn_ff)
         
         self.btn_record = QPushButton()
         self.btn_record.setIcon(icon_record)

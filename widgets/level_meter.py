@@ -6,7 +6,7 @@ class LevelMeter(QWidget):
     """Custom vertical LED VU meter with peak hold and clip indicator."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(22, 130)
+        self.setMinimumSize(12, 30)
         self.setMaximumSize(35, 300)
         
         self.current_db = -60.0
@@ -76,14 +76,15 @@ class LevelMeter(QWidget):
             painter.drawRoundedRect(0, 0, w - 1, h - 1, 3, 3)
             
             # 2. Geometry calculations
-            margin_x = 3
-            clip_height = 8
-            meter_y_start = 5 + clip_height + 5  # Margin + Clip LED + Margin
-            meter_height = h - meter_y_start - 5  # Bottom margin is 5
+            margin_x = 2 if h < 80 else 3
+            clip_height = 4 if h < 80 else 8
+            margin_y = 2 if h < 80 else 5
+            meter_y_start = margin_y + clip_height + margin_y
+            meter_height = h - meter_y_start - margin_y
             meter_width = w - (margin_x * 2)
             
             # 3. Draw Clip LED at the top
-            clip_rect = QRectF(margin_x, 5, meter_width, clip_height)
+            clip_rect = QRectF(margin_x, margin_y, meter_width, clip_height)
             if self.clip_active:
                 painter.setBrush(QBrush(self.color_red))
                 painter.setPen(QPen(self.color_red.lighter(), 1.0))
@@ -93,10 +94,10 @@ class LevelMeter(QWidget):
             painter.drawRect(clip_rect)
             
             # 4. Draw segmented LED bars
-            num_segments = 24
-            seg_spacing = 1.5
+            num_segments = 12 if h < 80 else 24
+            seg_spacing = 1.0 if h < 80 else 1.5
             total_spacing_h = (num_segments - 1) * seg_spacing
-            seg_h = (meter_height - total_spacing_h) / num_segments
+            seg_h = max(1.0, (meter_height - total_spacing_h) / num_segments)
             
             min_db = -60.0
             max_db = 3.0

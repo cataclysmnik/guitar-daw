@@ -371,7 +371,7 @@ class AudioEngine:
         self.is_running = False
         self.stream = None
         self.main_volume = 0.0  # dB, range: -60.0 to +6.0
-        self.main_level_history = -60.0
+        self.main_level_history = [-60.0, -60.0]
         
         self.play_state = "stopped"         # "stopped", "playing", "paused", "recording"
         self.playhead_samples = 0           # current playback cursor position in samples
@@ -1089,13 +1089,22 @@ class AudioEngine:
         main_gain = 10.0 ** (self.main_volume / 20.0)
         mixed_out *= main_gain
         
-        # Update Master VU Meter level
-        main_peak = np.max(np.abs(mixed_out))
-        main_db = 20.0 * np.log10(main_peak) if main_peak > 1e-5 else -60.0
-        if main_db > self.main_level_history:
-            self.main_level_history = main_db
+        # Update Master VU Meter level (stereo)
+        main_peak_l = np.max(np.abs(mixed_out[:, 0]))
+        main_peak_r = np.max(np.abs(mixed_out[:, 1]))
+        
+        main_db_l = 20.0 * np.log10(main_peak_l) if main_peak_l > 1e-5 else -60.0
+        main_db_r = 20.0 * np.log10(main_peak_r) if main_peak_r > 1e-5 else -60.0
+        
+        if main_db_l > self.main_level_history[0]:
+            self.main_level_history[0] = main_db_l
         else:
-            self.main_level_history = self.main_level_history * 0.85 + main_db * 0.15
+            self.main_level_history[0] = self.main_level_history[0] * 0.85 + main_db_l * 0.15
+            
+        if main_db_r > self.main_level_history[1]:
+            self.main_level_history[1] = main_db_r
+        else:
+            self.main_level_history[1] = self.main_level_history[1] * 0.85 + main_db_r * 0.15
             
         # 9. Clip output to prevent digital distortion
         np.clip(mixed_out, -1.0, 1.0, out=mixed_out)

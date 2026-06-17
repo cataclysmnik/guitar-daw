@@ -1,25 +1,56 @@
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QLabel,
-    QComboBox, QPushButton, QLineEdit, QSizePolicy
+    QComboBox, QPushButton, QLineEdit, QSizePolicy, QWidget
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QColor
 from widgets.level_meter import LevelMeter
 
+class WheelIgnoredComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+class DoubleClickLineEdit(QLineEdit):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setReadOnly(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        
+    def mouseDoubleClickEvent(self, event):
+        self.setReadOnly(False)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocus()
+        self.selectAll()
+        super().mouseDoubleClickEvent(event)
+        
+    def focusOutEvent(self, event):
+        self.setReadOnly(True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.deselect()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
+            self.clearFocus()
+        else:
+            super().keyPressEvent(event)
+
 class TrackCard(QFrame):
     """Card-style Track widget displaying track settings and VU meter."""
     trackSelected = Signal(object)  # Emitted when the card is clicked/selected
     trackRemoved = Signal(object)   # Emitted when delete button is pressed
+    trackDuplicated = Signal(object) # Emitted when duplicate action is triggered
     
     def __init__(self, track, audio_engine, parent=None):
         super().__init__(parent)
         self.track = track
         self.audio_engine = audio_engine
         self.is_selected = False
+        self._small_layout_active = False
         
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(60)
         self.setObjectName("TrackCard")
         self.setProperty("selected", False)
         
@@ -41,20 +72,20 @@ class TrackCard(QFrame):
         details_layout.setSpacing(6)
         
         # Row 1: Track Number, Name & Delete Button
-        header_layout = QHBoxLayout()
-        header_layout.setSpacing(6)
+        self.header_layout = QHBoxLayout()
+        self.header_layout.setSpacing(6)
         
         # Track Number Badge
         self.lbl_num = QLabel(f"{self.track.track_id:02d}")
         self.lbl_num.setObjectName("TrackNumberLabel")
-        header_layout.addWidget(self.lbl_num)
+        self.header_layout.addWidget(self.lbl_num)
         
         # Editable Track Name
-        self.name_edit = QLineEdit(self.track.name)
+        self.name_edit = DoubleClickLineEdit(self.track.name)
         self.name_edit.setObjectName("TrackNameEdit")
         self.name_edit.setToolTip("Double-click to rename track")
         self.name_edit.editingFinished.connect(self.on_rename)
-        header_layout.addWidget(self.name_edit)
+        self.header_layout.addWidget(self.name_edit)
         
         # Sleek small Delete Button
         self.btn_delete = QPushButton("×")
@@ -62,13 +93,16 @@ class TrackCard(QFrame):
         self.btn_delete.setToolTip("Delete Track")
         self.btn_delete.clicked.connect(self.on_delete_clicked)
         self.btn_delete.setFixedSize(18, 18)
-        header_layout.addWidget(self.btn_delete)
+        self.header_layout.addWidget(self.btn_delete)
         
-        details_layout.addLayout(header_layout)
+        details_layout.addLayout(self.header_layout)
         
         # Row 2: Controls Row (M, S, R, FX)
-        controls_layout = QHBoxLayout()
-        controls_layout.setSpacing(4)
+        self.controls_widget = QWidget()
+        self.controls_widget.setObjectName("TrackControlsWidget")
+        self.controls_layout = QHBoxLayout(self.controls_widget)
+        self.controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.controls_layout.setSpacing(4)
         
         self.btn_mute = QPushButton("M")
         self.btn_mute.setCheckable(True)
@@ -91,21 +125,15 @@ class TrackCard(QFrame):
         self.btn_arm.setToolTip("Arm Track for Input Monitoring")
         self.btn_arm.clicked.connect(self.on_arm_clicked)
         
-        self.btn_fx = QPushButton("FX")
-        self.btn_fx.setObjectName("FxButton")
-        self.btn_fx.setToolTip("View/edit effects rack for this track")
-        self.btn_fx.clicked.connect(self.on_fx_clicked)
+        self.controls_layout.addWidget(self.btn_mute)
+        self.controls_layout.addWidget(self.btn_solo)
+        self.controls_layout.addWidget(self.btn_arm)
+        self.controls_layout.addStretch()
         
-        controls_layout.addWidget(self.btn_mute)
-        controls_layout.addWidget(self.btn_solo)
-        controls_layout.addWidget(self.btn_arm)
-        controls_layout.addWidget(self.btn_fx)
-        controls_layout.addStretch()
-        
-        details_layout.addLayout(controls_layout)
+        details_layout.addWidget(self.controls_widget)
         
         # Row 3: Input Channel Selector
-        self.combo_input = QComboBox()
+        self.combo_input = WheelIgnoredComboBox()
         self.combo_input.setObjectName("InputChannelCombo")
         self.combo_input.setToolTip("Select Track Input Channel")
         self.populate_inputs()
@@ -274,22 +302,8 @@ class TrackCard(QFrame):
     def update_levels(self):
         """Updates the LED VU level meter with the current peak dB."""
         self.level_meter.set_level(self.track.level_history)
-        self.update_fx_status()
 
-    def update_fx_status(self):
-        """Updates the FX button color to show if effects are loaded and active."""
-        has_active = any(wrap.is_active for wrap in self.track.effects)
-        has_inactive = any(not wrap.is_active for wrap in self.track.effects)
-        
-        if has_active:
-            self.btn_fx.setProperty("fxState", "active")
-        elif has_inactive:
-            self.btn_fx.setProperty("fxState", "inactive")
-        else:
-            self.btn_fx.setProperty("fxState", "none")
-            
-        self.btn_fx.style().unpolish(self.btn_fx)
-        self.btn_fx.style().polish(self.btn_fx)
+
 
     def set_selected(self, selected):
         """Sets selected state and updates dynamic styles."""
@@ -311,7 +325,71 @@ class TrackCard(QFrame):
     def mousePressEvent(self, event):
         """Select track when clicking anywhere on the card."""
         self.set_selected(True)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start_position = event.pos()
         super().mousePressEvent(event)
+        
+    def mouseMoveEvent(self, event):
+        if not hasattr(self, 'drag_start_position') or self.drag_start_position is None:
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (event.pos() - self.drag_start_position).manhattanLength() < 10:
+            return
+            
+        from PySide6.QtGui import QDrag
+        from PySide6.QtCore import QMimeData
+        
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setText(str(self.track.track_id))
+        drag.setMimeData(mime_data)
+        
+        # Grab a scaled-down screenshot of the card for the drag preview
+        pixmap = self.grab()
+        scaled_pixmap = pixmap.scaledToWidth(200, Qt.TransformationMode.SmoothTransformation)
+        drag.setPixmap(scaled_pixmap)
+        drag.setHotSpot(event.pos() * (200 / pixmap.width()))
+        
+        drag.exec(Qt.DropAction.MoveAction)
+        self.drag_start_position = None
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        h = self.height()
+        show_combo = (h >= 115)
+        self.combo_input.setVisible(show_combo)
+        
+        # Adjust layout margins and spacing dynamically to fit small sizes
+        if h < 85:
+            self.layout().setContentsMargins(8, 4, 8, 4)
+            self.layout().setSpacing(6)
+        else:
+            self.layout().setContentsMargins(12, 10, 10, 10)
+            self.layout().setSpacing(12)
+        
+        is_small = (h < 85)
+        if is_small != self._small_layout_active:
+            self._small_layout_active = is_small
+            if is_small:
+                # Hide controls widget container
+                self.controls_widget.setVisible(False)
+                # Move buttons into the header layout (before the delete button)
+                self.header_layout.insertWidget(2, self.btn_mute)
+                self.header_layout.insertWidget(3, self.btn_solo)
+                self.header_layout.insertWidget(4, self.btn_arm)
+            else:
+                # Move buttons back to controls_layout
+                self.controls_layout.insertWidget(0, self.btn_mute)
+                self.controls_layout.insertWidget(1, self.btn_solo)
+                self.controls_layout.insertWidget(2, self.btn_arm)
+                # Show controls widget container
+                self.controls_widget.setVisible(True)
+                
+        # Ensure buttons remain visible at all times
+        self.btn_mute.setVisible(True)
+        self.btn_solo.setVisible(True)
+        self.btn_arm.setVisible(True)
         
     def on_rename(self):
         new_name = self.name_edit.text().strip()
@@ -347,9 +425,51 @@ class TrackCard(QFrame):
     def on_pan_changed(self, value):
         self.track.pan = value
         
-    def on_fx_clicked(self):
-        self.set_selected(True)
-        # We can handle custom actions/notifications for fx rack focus
+
         
     def on_delete_clicked(self):
         self.trackRemoved.emit(self.track)
+        
+    def contextMenuEvent(self, event):
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QAction
+        
+        self.set_selected(True)
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #0b0b0c;
+                color: #e2e2e5;
+                border: 1px solid #222225;
+            }
+            QMenu::item:selected {
+                background-color: #222225;
+                color: #ffffff;
+            }
+        """)
+        
+        action_rename = QAction("Rename Track", self)
+        action_rename.triggered.connect(self.trigger_rename)
+        menu.addAction(action_rename)
+        
+        action_duplicate = QAction("Duplicate Track", self)
+        action_duplicate.triggered.connect(self.trigger_duplicate)
+        menu.addAction(action_duplicate)
+        
+        menu.addSeparator()
+        
+        action_delete = QAction("Delete Track", self)
+        action_delete.triggered.connect(self.on_delete_clicked)
+        menu.addAction(action_delete)
+        
+        menu.exec(event.globalPos())
+
+    def trigger_rename(self):
+        self.name_edit.setReadOnly(False)
+        self.name_edit.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.name_edit.setFocus()
+        self.name_edit.selectAll()
+
+    def trigger_duplicate(self):
+        self.trackDuplicated.emit(self.track)
