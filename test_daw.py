@@ -21,6 +21,7 @@ def test_daw_serialization():
     track.pan = -0.3
     track.armed = True
     track.input_channel = 1
+    track.arm_regions = [[22050, 44100]]
     
     # Create a dummy WAV file to test AudioItem serialization
     test_wav_path = "test_item.wav"
@@ -72,6 +73,7 @@ def test_daw_serialization():
     assert abs(loaded_track.pan - (-0.3)) < 1e-5, f"Expected pan -0.3, got {loaded_track.pan}"
     assert loaded_track.armed is True, f"Expected armed True, got {loaded_track.armed}"
     assert loaded_track.input_channel == 1, f"Expected input channel 1, got {loaded_track.input_channel}"
+    assert loaded_track.arm_regions == [[22050, 44100]], f"Expected arm_regions [[22050, 44100]], got {loaded_track.arm_regions}"
     
     assert len(loaded_track.effects) == 1, f"Expected 1 effect, got {len(loaded_track.effects)}"
     loaded_fx = loaded_track.effects[0]

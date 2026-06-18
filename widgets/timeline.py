@@ -208,26 +208,26 @@ class TimelineLanesWidget(QWidget):
         
     def get_hover_state(self, x, y):
         """
-        Returns (item, track, hover_type) where hover_type can be:
-        - "resize_left"
-        - "resize_right"
-        - "move"
-        - None
+        Returns (target, target_type, track, hover_type) where target_type is "item" or "arm_region"
+        and hover_type can be "resize_left", "resize_right", "move", or None.
         """
         track_idx = int(y // self.lane_height)
         if track_idx < 0 or track_idx >= len(self.audio_engine.tracks):
-            return None, None, None
+            return None, None, None, None
             
         track = self.audio_engine.tracks[track_idx]
         margin = 8
         
         with track.lock:
             items_copy = list(track.items)
+            arm_regions_copy = list(getattr(track, "arm_regions", []))
             
-        best_item = None
+        best_target = None
+        best_target_type = None
         best_type = None
         min_dist = float('inf')
         
+        # 1. Check audio items first
         for item in items_copy:
             if item.audio_data is None:
                 continue
@@ -241,40 +241,72 @@ class TimelineLanesWidget(QWidget):
                 # Check near left edge
                 if dist_left <= margin and dist_left < min_dist:
                     min_dist = dist_left
-                    best_item = item
+                    best_target = item
+                    best_target_type = "item"
                     best_type = "resize_left"
                 # Check near right edge
                 elif dist_right <= margin and dist_right < min_dist:
                     min_dist = dist_right
-                    best_item = item
+                    best_target = item
+                    best_target_type = "item"
                     best_type = "resize_right"
                 # Inside item
                 elif item_start_x < x < item_end_x:
                     if min_dist == float('inf'):
-                        best_item = item
+                        best_target = item
+                        best_target_type = "item"
                         best_type = "move"
                         
-        if best_item:
-            return best_item, track, best_type
-        return None, None, None
+        # 2. Check Auto-Arm regions if no item matched
+        if best_target is None:
+            sr = self.audio_engine.sample_rate
+            for region in arm_regions_copy:
+                reg_start_x = int((region[0] / sr) * self.pixels_per_second)
+                reg_end_x = int((region[1] / sr) * self.pixels_per_second)
+                
+                if reg_start_x - margin <= x <= reg_end_x + margin:
+                    dist_left = abs(x - reg_start_x)
+                    dist_right = abs(x - reg_end_x)
+                    
+                    if dist_left <= margin and dist_left < min_dist:
+                        min_dist = dist_left
+                        best_target = region
+                        best_target_type = "arm_region"
+                        best_type = "resize_left"
+                    elif dist_right <= margin and dist_right < min_dist:
+                        min_dist = dist_right
+                        best_target = region
+                        best_target_type = "arm_region"
+                        best_type = "resize_right"
+                    elif reg_start_x < x < reg_end_x:
+                        if min_dist == float('inf'):
+                            best_target = region
+                            best_target_type = "arm_region"
+                            best_type = "move"
+                            
+        if best_target:
+            return best_target, best_target_type, track, best_type
+        return None, None, None, None
 
     def mousePressEvent(self, event):
         self.setFocus()  # Ensure widget gets focus so it can receive key events!
         x = event.position().x()
         y = event.position().y()
         
-        item, track, hover_type = self.get_hover_state(x, y)
+        target, target_type, track, hover_type = self.get_hover_state(x, y)
         
         # Emit track selection even if clicked on empty space
         track_idx = int(y // self.lane_height)
         if track_idx < len(self.audio_engine.tracks):
             self.trackSelected.emit(track_idx)
             
-        if item and track:
-            self.selected_item = item
+        if target and track:
+            self.selected_item = target
+            self.selected_target_type = target_type
             self.selected_track_for_item = track
             
-            self.active_drag_item = item
+            self.active_drag_item = target
+            self.active_drag_target_type = target_type
             self.drag_track = track
             self.active_drag_mode = hover_type
             
@@ -283,12 +315,15 @@ class TimelineLanesWidget(QWidget):
             
             # Store initial states
             self.drag_click_x = x
-            self.drag_start_sample = item.start_sample
-            self.drag_offset_samples = item.offset_samples
-            self.drag_length_samples = item.length_samples
-            
-            # For moving: click offset inside the item
-            self.drag_offset_samples_click = click_sample - item.start_sample
+            if target_type == "item":
+                self.drag_start_sample = target.start_sample
+                self.drag_offset_samples = target.offset_samples
+                self.drag_length_samples = target.length_samples
+                self.drag_offset_samples_click = click_sample - target.start_sample
+            else: # arm_region
+                self.drag_start_sample = target[0]
+                self.drag_length_samples = target[1] - target[0]
+                self.drag_offset_samples_click = click_sample - target[0]
             
             if hover_type in ("resize_left", "resize_right"):
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
@@ -297,8 +332,10 @@ class TimelineLanesWidget(QWidget):
             self.update()
         else:
             self.selected_item = None
+            self.selected_target_type = None
             self.selected_track_for_item = None
             self.active_drag_item = None
+            self.active_drag_target_type = None
             self.active_drag_mode = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
             
@@ -313,23 +350,38 @@ class TimelineLanesWidget(QWidget):
         
         if self.active_drag_item:
             sample_rate = self.audio_engine.sample_rate
+            target_type = self.active_drag_target_type
             
             if self.active_drag_mode == "move":
                 new_start = int((x / self.pixels_per_second) * sample_rate) - self.drag_offset_samples_click
                 new_start = max(0, new_start)
-                with self.drag_track.lock:
-                    self.active_drag_item.start_sample = new_start
+                if target_type == "item":
+                    with self.drag_track.lock:
+                        self.active_drag_item.start_sample = new_start
+                else: # arm_region
+                    with self.drag_track.lock:
+                        self.active_drag_item[0] = new_start
+                        self.active_drag_item[1] = new_start + self.drag_length_samples
                     
-                # Shift clip between tracks when dragging vertically
+                # Shift clip/region between tracks when dragging vertically
                 target_track_idx = int(y // self.lane_height)
                 target_track_idx = max(0, min(len(self.audio_engine.tracks) - 1, target_track_idx))
                 target_track = self.audio_engine.tracks[target_track_idx]
                 if target_track != self.drag_track:
-                    with self.drag_track.lock:
-                        if self.active_drag_item in self.drag_track.items:
-                            self.drag_track.items.remove(self.active_drag_item)
-                    with target_track.lock:
-                        target_track.items.append(self.active_drag_item)
+                    if target_type == "item":
+                        with self.drag_track.lock:
+                            if self.active_drag_item in self.drag_track.items:
+                                self.drag_track.items.remove(self.active_drag_item)
+                        with target_track.lock:
+                            target_track.items.append(self.active_drag_item)
+                    else: # arm_region
+                        with self.drag_track.lock:
+                            if self.active_drag_item in getattr(self.drag_track, "arm_regions", []):
+                                self.drag_track.arm_regions.remove(self.active_drag_item)
+                        with target_track.lock:
+                            if not hasattr(target_track, "arm_regions"):
+                                target_track.arm_regions = []
+                            target_track.arm_regions.append(self.active_drag_item)
                     self.drag_track = target_track
                     self.selected_track_for_item = target_track
             
@@ -347,21 +399,25 @@ class TimelineLanesWidget(QWidget):
                 max_allowed_start = timeline_end - min_len
                 new_start = min(new_start, max_allowed_start)
                 
-                actual_delta = new_start - self.drag_start_sample
-                new_offset = self.drag_offset_samples + actual_delta
-                
-                # Check bounds for new_offset
-                max_offset = self.active_drag_item.audio_data.shape[1] - min_len
-                new_offset = max(0, min(new_offset, max_offset))
-                
-                actual_delta = new_offset - self.drag_offset_samples
-                new_start = self.drag_start_sample + actual_delta
-                new_length = timeline_end - new_start
-                
-                with self.drag_track.lock:
-                    self.active_drag_item.start_sample = new_start
-                    self.active_drag_item.offset_samples = new_offset
-                    self.active_drag_item.length_samples = new_length
+                if target_type == "item":
+                    actual_delta = new_start - self.drag_start_sample
+                    new_offset = self.drag_offset_samples + actual_delta
+                    
+                    # Check bounds for new_offset
+                    max_offset = self.active_drag_item.audio_data.shape[1] - min_len
+                    new_offset = max(0, min(new_offset, max_offset))
+                    
+                    actual_delta = new_offset - self.drag_offset_samples
+                    new_start = self.drag_start_sample + actual_delta
+                    new_length = timeline_end - new_start
+                    
+                    with self.drag_track.lock:
+                        self.active_drag_item.start_sample = new_start
+                        self.active_drag_item.offset_samples = new_offset
+                        self.active_drag_item.length_samples = new_length
+                else: # arm_region
+                    with self.drag_track.lock:
+                        self.active_drag_item[0] = new_start
                     
             elif self.active_drag_mode == "resize_right":
                 mouse_sample = int((x / self.pixels_per_second) * sample_rate)
@@ -370,16 +426,20 @@ class TimelineLanesWidget(QWidget):
                 
                 new_length = self.drag_length_samples + delta_samples
                 min_len = int(0.05 * sample_rate)
-                max_len = self.active_drag_item.audio_data.shape[1] - self.active_drag_item.offset_samples
-                new_length = max(min_len, min(new_length, max_len))
-                
-                with self.drag_track.lock:
-                    self.active_drag_item.length_samples = new_length
+                if target_type == "item":
+                    max_len = self.active_drag_item.audio_data.shape[1] - self.active_drag_item.offset_samples
+                    new_length = max(min_len, min(new_length, max_len))
+                    with self.drag_track.lock:
+                        self.active_drag_item.length_samples = new_length
+                else: # arm_region
+                    new_length = max(min_len, new_length)
+                    with self.drag_track.lock:
+                        self.active_drag_item[1] = self.drag_start_sample + new_length
                     
             self.update_geometry()
         else:
             # Hover cursor update
-            item, track, hover_type = self.get_hover_state(x, y)
+            target, target_type, track, hover_type = self.get_hover_state(x, y)
             if hover_type in ("resize_left", "resize_right"):
                 self.setCursor(Qt.CursorShape.SizeHorCursor)
             elif hover_type == "move":
@@ -390,6 +450,7 @@ class TimelineLanesWidget(QWidget):
     def mouseReleaseEvent(self, event):
         if self.active_drag_item:
             self.active_drag_item = None
+            self.active_drag_target_type = None
             self.drag_track = None
             self.active_drag_mode = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -397,11 +458,32 @@ class TimelineLanesWidget(QWidget):
                 self.main_window.mark_project_dirty()
             
     def mouseDoubleClickEvent(self, event):
-        # Double-click empty track lane space to import audio
+        # Double-click empty track lane space to import audio or create Auto-Arm zone
         y = event.position().y()
         track_idx = int(y // self.lane_height)
         if track_idx < len(self.audio_engine.tracks):
             track = self.audio_engine.tracks[track_idx]
+            x = event.position().x()
+            sample_rate = self.audio_engine.sample_rate
+            start_sample = int((x / self.pixels_per_second) * sample_rate)
+            
+            # If Shift is held down, create an Auto-Arm Zone!
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Default 5 seconds
+                end_sample = start_sample + int(5.0 * sample_rate)
+                if not hasattr(track, "arm_regions"):
+                    track.arm_regions = []
+                with track.lock:
+                    region = [start_sample, end_sample]
+                    track.arm_regions.append(region)
+                self.selected_item = region
+                self.selected_target_type = "arm_region"
+                self.selected_track_for_item = track
+                self.update_geometry()
+                self.update()
+                if hasattr(self, 'main_window') and self.main_window:
+                    self.main_window.mark_project_dirty()
+                return
             
             # Select file dialog
             file_path, _ = QFileDialog.getOpenFileName(
@@ -411,10 +493,6 @@ class TimelineLanesWidget(QWidget):
                 "Audio Files (*.wav *.mp3 *.flac *.ogg *.m4a *.wma *.aiff *.aif);;All Files (*)"
             )
             if file_path:
-                x = event.position().x()
-                sample_rate = self.audio_engine.sample_rate
-                start_sample = int((x / self.pixels_per_second) * sample_rate)
-                
                 # Create and add item
                 item = AudioItem(start_sample, sample_rate, file_path=file_path)
                 if item.audio_data is not None:
@@ -430,13 +508,19 @@ class TimelineLanesWidget(QWidget):
         if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
             if self.selected_item and self.selected_track_for_item:
                 track = self.selected_track_for_item
-                item = self.selected_item
+                target = self.selected_item
+                target_type = getattr(self, "selected_target_type", "item")
                 
                 with track.lock:
-                    if item in track.items:
-                        track.items.remove(item)
+                    if target_type == "item":
+                        if target in track.items:
+                            track.items.remove(target)
+                    else: # arm_region
+                        if hasattr(track, "arm_regions") and target in track.arm_regions:
+                            track.arm_regions.remove(target)
                 
                 self.selected_item = None
+                self.selected_target_type = None
                 self.selected_track_for_item = None
                 self.update_geometry()
                 self.update()
@@ -533,13 +617,40 @@ class TimelineLanesWidget(QWidget):
                 y_top = t_idx * self.lane_height + 5
                 draw_h = self.lane_height - 10
                 
+                # Draw Auto-Arm Zones for this track first (as a background overlay)
+                with track.lock:
+                    arm_regions_copy = list(getattr(track, "arm_regions", []))
+                for region in arm_regions_copy:
+                    sr = self.audio_engine.sample_rate
+                    start_x = int((region[0] / sr) * self.pixels_per_second)
+                    end_x = int((region[1] / sr) * self.pixels_per_second)
+                    region_width = max(2, end_x - start_x)
+                    
+                    rect = QRectF(start_x, y_top, region_width, draw_h)
+                    is_selected = (self.selected_item == region)
+                    
+                    if is_selected:
+                        painter.setBrush(QBrush(QColor(255, 68, 68, 85)))
+                        painter.setPen(QPen(QColor(255, 68, 68), 2, Qt.PenStyle.DashLine))
+                    else:
+                        painter.setBrush(QBrush(QColor(255, 68, 68, 45)))
+                        painter.setPen(QPen(QColor(255, 68, 68, 180), 1.2, Qt.PenStyle.DashLine))
+                        
+                    painter.drawRoundedRect(rect, 4, 4)
+                    
+                    font = QFont("Consolas", 8, QFont.Weight.Bold)
+                    painter.setFont(font)
+                    painter.setPen(QColor(255, 170, 170))
+                    painter.drawText(start_x + 6, y_top + draw_h - 10, "Auto-Arm Zone")
+                
                 with track.lock:
                     items_copy = list(track.items)
                     
                 # Prepare live recording item if track is recording
                 is_recording = (self.audio_engine.play_state == "recording")
                 live_item = None
-                if is_recording and track.armed:
+                has_arm_regions = len(getattr(track, "arm_regions", [])) > 0
+                if is_recording and (track.armed or has_arm_regions):
                     with self.audio_engine.lock:
                         buffers = self.audio_engine.recording_buffers.get(track.track_id)
                         if buffers and len(buffers) > 0:

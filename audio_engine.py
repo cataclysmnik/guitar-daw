@@ -1,5 +1,6 @@
 import os
 os.environ["SD_ENABLE_ASIO"] = "1"
+import math
 
 import sounddevice as sd
 import numpy as np
@@ -117,19 +118,18 @@ class TunerBuffer:
     def write(self, data):
         if data is None or len(data) == 0:
             return
-        with self.lock:
-            n = len(data)
-            if n > self.size:
-                data = data[-self.size:]
-                n = self.size
-            end = self.write_ptr + n
-            if end <= self.size:
-                self.buffer[self.write_ptr:end] = data
-            else:
-                first_part = self.size - self.write_ptr
-                self.buffer[self.write_ptr:] = data[:first_part]
-                self.buffer[:n - first_part] = data[first_part:]
-            self.write_ptr = (self.write_ptr + n) % self.size
+        n = len(data)
+        if n > self.size:
+            data = data[-self.size:]
+            n = self.size
+        end = self.write_ptr + n
+        if end <= self.size:
+            self.buffer[self.write_ptr:end] = data
+        else:
+            first_part = self.size - self.write_ptr
+            self.buffer[self.write_ptr:] = data[:first_part]
+            self.buffer[:n - first_part] = data[first_part:]
+        self.write_ptr = (self.write_ptr + n) % self.size
 
     def read_latest(self, n):
         with self.lock:
@@ -309,6 +309,7 @@ class Track:
         self.input_channel = 0  # int channel index, or "loop"
         self.effects = []      # list of EffectWrapper objects
         self.items = []        # list of AudioItem objects
+        self.arm_regions = []  # list of [start_sample, end_sample] regions for dynamic auto-arming
         
         # The compiled Pedalboard object
         self.pedalboard = Pedalboard([])
@@ -349,6 +350,7 @@ class AudioEngine:
 
     def __init__(self):
         self.tracks = []
+        self.tracks_list_cache = []
         
         # Advanced audio settings matching professional layouts
         self.audio_system = None           # Host API index (e.g. WASAPI, ASIO, MME)
@@ -404,6 +406,10 @@ class AudioEngine:
         
         self.load_settings()
         self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(32, (os.cpu_count() or 4)))
+        self.zero_block = np.zeros(16384, dtype=np.float32)
+        self._mixed_out_buf = np.zeros((16384, 2), dtype=np.float32)
+        self._playback_buf = np.zeros(16384, dtype=np.float32)
+        self._realtime_buf = np.zeros(16384, dtype=np.float32)
         
     def save_settings(self):
         """Saves advanced audio engine settings to a JSON file."""
@@ -689,13 +695,15 @@ class AudioEngine:
         if not self.is_running:
             self.start_stream()
         with self.lock:
-            armed_any = any(t.armed for t in self.tracks)
+            armed_any = any(t.armed or len(getattr(t, "arm_regions", [])) > 0 for t in self.tracks)
             if not armed_any:
                 self.play_state = "playing" # fallback
                 return
             self.play_state = "recording"
             self.recording_start_sample = self.playhead_samples
             self.recording_buffers.clear()
+            for t in self.tracks:
+                self.recording_buffers[t.track_id] = []
 
     def stop_recording(self):
         """Stops recording state and saves recorded blocks."""
@@ -722,7 +730,6 @@ class AudioEngine:
                     continue
                 track = next((t for t in self.tracks if t.track_id == track_id), None)
                 if track:
-                    # Copy the buffers list and clear it from engine
                     buffers_to_process.append((track, list(buffers)))
             self.recording_buffers.clear()
             
@@ -730,19 +737,46 @@ class AudioEngine:
         for track, buffers in buffers_to_process:
             try:
                 recorded_audio = np.concatenate(buffers)
-                audio_2d = np.reshape(recorded_audio, (1, -1))
+                total_recorded_samples = len(recorded_audio)
+                if total_recorded_samples == 0:
+                    continue
                 
-                filename = f"recorded_track_{track.track_id}_{uuid.uuid4().hex[:6]}.wav"
-                file_path = os.path.join(os.getcwd(), filename)
-                
-                item = AudioItem(start_sample, sr, file_path=file_path, audio_data=audio_2d)
-                try:
-                    item.save_to_wav(file_path)
-                except Exception as e:
-                    print(f"Failed to save recorded WAV: {e}")
-                
-                with track.lock:
-                    track.items.append(item)
+                # If manually armed, save the entire continuous recording
+                if track.armed:
+                    audio_2d = np.reshape(recorded_audio, (1, -1))
+                    filename = f"recorded_track_{track.track_id}_{uuid.uuid4().hex[:6]}.wav"
+                    file_path = os.path.join(os.getcwd(), filename)
+                    item = AudioItem(start_sample, sr, file_path=file_path, audio_data=audio_2d)
+                    try:
+                        item.save_to_wav(file_path)
+                        with track.lock:
+                            track.items.append(item)
+                    except Exception as e:
+                        print(f"Failed to save recorded WAV: {e}")
+                else:
+                    # Dynamically armed: save only the parts that overlap with Auto-Arm Zones
+                    for zone_start, zone_end in getattr(track, "arm_regions", []):
+                        session_end = start_sample + total_recorded_samples
+                        
+                        overlap_start = max(start_sample, zone_start)
+                        overlap_end = min(session_end, zone_end)
+                        
+                        if overlap_start < overlap_end:
+                            slice_start = overlap_start - start_sample
+                            slice_end = overlap_end - start_sample
+                            sliced_audio = recorded_audio[slice_start:slice_end]
+                            
+                            if len(sliced_audio) > 0:
+                                audio_2d = np.reshape(sliced_audio, (1, -1))
+                                filename = f"recorded_track_{track.track_id}_{uuid.uuid4().hex[:6]}.wav"
+                                file_path = os.path.join(os.getcwd(), filename)
+                                item = AudioItem(overlap_start, sr, file_path=file_path, audio_data=audio_2d)
+                                try:
+                                    item.save_to_wav(file_path)
+                                    with track.lock:
+                                        track.items.append(item)
+                                except Exception as e:
+                                    print(f"Failed to save sliced recorded WAV: {e}")
             except Exception as e:
                 print(f"Error processing recorded data for Track {track.name}: {e}")
 
@@ -755,12 +789,14 @@ class AudioEngine:
             new_track = Track(track_id, name)
             new_track.input_channel = self.input_first_channel
             self.tracks.append(new_track)
+            self.tracks_list_cache = list(self.tracks)
             return new_track
             
     def remove_track(self, track_id):
         """Removes a track by its ID."""
         with self.lock:
             self.tracks = [t for t in self.tracks if t.track_id != track_id]
+            self.tracks_list_cache = list(self.tracks)
             
     def render_project_offline(self, file_path, start_time_sec, end_time_sec, sample_rate, bit_depth, channels="stereo", format_type="wav", progress_callback=None):
         """Renders the timeline project to a WAV or MP3 file offline (faster than real-time)."""
@@ -931,16 +967,27 @@ class AudioEngine:
         # Skip tracks that are muted or not part of solo routing
         if track.mute or (has_solo and not track.solo):
             track.level_history = -60.0
-            return np.zeros(frames, dtype=np.float32), np.zeros(frames, dtype=np.float32)
+            z = self.zero_block[:frames]
+            return z, z
             
-        # Skip tracks that are permanently silent (not armed and no timeline items)
-        if not track.armed and len(track.items) == 0:
+        # Skip tracks that are permanently silent (not armed, no arm regions, and no timeline items)
+        has_arm_regions = len(getattr(track, "arm_regions", [])) > 0
+        if not track.armed and not has_arm_regions and len(track.items) == 0:
             track.level_history = -60.0
-            return np.zeros(frames, dtype=np.float32), np.zeros(frames, dtype=np.float32)
+            z = self.zero_block[:frames]
+            return z, z
             
+        # Determine if track is dynamically armed
+        is_armed = track.armed
+        if not is_armed:
+            for start, end in getattr(track, "arm_regions", []):
+                if not (curr_playhead + frames <= start or curr_playhead >= end):
+                    is_armed = True
+                    break
+
         # 1. Fetch real-time input block (if armed)
         realtime_in = None
-        if track.armed:
+        if is_armed:
             if track.input_channel == "loop":
                 realtime_in = demo_input
             elif self.demo_loop_active:
@@ -954,21 +1001,24 @@ class AudioEngine:
                     pass
                     
         if realtime_in is None:
-            realtime_in = np.zeros(frames, dtype=np.float32)
+            realtime_in = self.zero_block[:frames]
             
         # Write realtime_in to tuner circular buffer if track is armed and selected
-        if track.armed and track.track_id == self.selected_track_id:
+        if is_armed and track.track_id == self.selected_track_id:
             self.tuner_buffer.write(realtime_in)
             
-        # If recording, append real-time input to recording buffers
-        if is_recording_state and track.armed:
-            with self.lock:
-                if track.track_id not in self.recording_buffers:
-                    self.recording_buffers[track.track_id] = []
-                self.recording_buffers[track.track_id].append(realtime_in.copy())
+        # If recording, append real-time input (or silence) to recording buffers (lock-free)
+        if is_recording_state:
+            rec_list = self.recording_buffers.get(track.track_id)
+            if rec_list is not None:
+                if is_armed:
+                    rec_list.append(realtime_in.copy())
+                else:
+                    rec_list.append(self.zero_block[:frames])
                 
         # 2. Fetch playback from recorded items (if play is active)
-        playback_in = np.zeros(frames, dtype=np.float32)
+        playback_in = self._playback_buf[:frames]
+        playback_in.fill(0)
         if play_active:
             with track.lock:
                 items_copy = list(track.items)
@@ -990,20 +1040,20 @@ class AudioEngine:
                     playback_in[write_offset : write_offset + length] += item.audio_data[0, read_offset : read_offset + length]
                     
         # Mix real-time input and playback items
-        if track.armed:
+        if is_armed:
             track_in = realtime_in + playback_in
         else:
             track_in = playback_in
             
         # 3. Reshape mono input to pedalboard's expected format (channels, samples)
-        pedalboard_in = np.reshape(track_in, (1, -1)).astype(np.float32)
+        pedalboard_in = np.reshape(track_in, (1, -1))
         
         # 3. Apply track effects sequentially (if active)
         has_active_effects = any(wrap.is_active for wrap in track.effects)
         if not has_active_effects:
             pedalboard_out = pedalboard_in
         else:
-            current_signal = pedalboard_in.copy()
+            current_signal = pedalboard_in
             try:
                 with track.lock:
                     for wrap in track.effects:
@@ -1035,8 +1085,8 @@ class AudioEngine:
         out_ch = pedalboard_out.shape[0]
         out_samples = pedalboard_out.shape[1] if pedalboard_out.ndim > 1 else 0
         if out_samples != frames:
-            left = np.zeros(frames, dtype=np.float32)
-            right = np.zeros(frames, dtype=np.float32)
+            left = self.zero_block[:frames]
+            right = self.zero_block[:frames]
         else:
             if out_ch == 1:
                 left = pedalboard_out[0, :]
@@ -1045,18 +1095,19 @@ class AudioEngine:
                 left = pedalboard_out[0, :]
                 right = pedalboard_out[1, :]
             
-        # 5. Apply Volume & Pan using constant-power panning
+        # Constant power panning (using math module to avoid NumPy scalar overhead)
         vol_gain = 10.0 ** (track.volume / 20.0)
-        
-        # Constant power panning
-        g_l = np.cos(np.pi / 4.0 * (track.pan + 1.0)) * vol_gain
-        g_r = np.sin(np.pi / 4.0 * (track.pan + 1.0)) * vol_gain
+        pan_factor = 0.7853981633974483 * (track.pan + 1.0) # pi / 4
+        g_l = math.cos(pan_factor) * vol_gain
+        g_r = math.sin(pan_factor) * vol_gain
         
         track_left = left * g_l
         track_right = right * g_r
         
         # 6. Update Track VU Meter level
-        peak_val = max(np.max(np.abs(track_left)), np.max(np.abs(track_right)))
+        peak_l = max(np.max(left), -np.min(left)) * g_l
+        peak_r = max(np.max(right), -np.min(right)) * g_r
+        peak_val = max(peak_l, peak_r)
         track_db = 20.0 * np.log10(peak_val) if peak_val > 1e-5 else -60.0
         if track_db > track.level_history:
             track.level_history = track_db
@@ -1072,32 +1123,29 @@ class AudioEngine:
             return
             
         # Prepare mixed stereo output accumulator
-        mixed_out = np.zeros((frames, 2), dtype=np.float32)
+        mixed_out = self._mixed_out_buf[:frames]
+        mixed_out.fill(0)
         
-        with self.lock:
-            play_active = self.play_state in ("playing", "recording")
-            is_recording_state = self.play_state == "recording"
-            curr_playhead = self.playhead_samples
+        play_active = self.play_state in ("playing", "recording")
+        is_recording_state = self.play_state == "recording"
+        curr_playhead = self.playhead_samples
             
         # Prepare demo loop chunk if needed
         demo_input = None
         if self.demo_loop_active:
-            with self.lock:
-                idx = self.guitar_loop_idx
-                loop_len = len(self.guitar_loop)
-                # Read block (wrap circularly)
-                if idx + frames <= loop_len:
-                    demo_input = self.guitar_loop[idx:idx+frames]
-                else:
-                    first_part = self.guitar_loop[idx:]
-                    second_part = self.guitar_loop[:frames - len(first_part)]
-                    demo_input = np.concatenate([first_part, second_part])
-                self.guitar_loop_idx = (idx + frames) % loop_len
+            idx = self.guitar_loop_idx
+            loop_len = len(self.guitar_loop)
+            # Read block (wrap circularly)
+            if idx + frames <= loop_len:
+                demo_input = self.guitar_loop[idx:idx+frames]
+            else:
+                first_part = self.guitar_loop[idx:]
+                second_part = self.guitar_loop[:frames - len(first_part)]
+                demo_input = np.concatenate([first_part, second_part])
+            self.guitar_loop_idx = (idx + frames) % loop_len
                 
         # Determine if any unmuted tracks are soloed
-        with self.lock:
-            tracks_copy = list(self.tracks)
-            
+        tracks_copy = self.tracks_list_cache
         has_solo = any(t.solo for t in tracks_copy if not t.mute)
         
         # Process track DSP loops sequentially on the audio callback thread
@@ -1154,8 +1202,8 @@ class AudioEngine:
         mixed_out *= main_gain
         
         # Update Master VU Meter level (stereo)
-        main_peak_l = np.max(np.abs(mixed_out[:, 0]))
-        main_peak_r = np.max(np.abs(mixed_out[:, 1]))
+        main_peak_l = max(np.max(mixed_out[:, 0]), -np.min(mixed_out[:, 0]))
+        main_peak_r = max(np.max(mixed_out[:, 1]), -np.min(mixed_out[:, 1]))
         
         main_db_l = 20.0 * np.log10(main_peak_l) if main_peak_l > 1e-5 else -60.0
         main_db_r = 20.0 * np.log10(main_peak_r) if main_peak_r > 1e-5 else -60.0
@@ -1181,8 +1229,7 @@ class AudioEngine:
             
         # 11. Advance playhead position
         if play_active:
-            with self.lock:
-                self.playhead_samples += frames
+            self.playhead_samples += frames
 
 
 _temp_vst_dir = None

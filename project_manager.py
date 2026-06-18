@@ -136,7 +136,8 @@ def save_project(file_path, audio_engine):
                 "armed": track.armed,
                 "input_channel": track.input_channel,
                 "effects": [],
-                "items": []
+                "items": [],
+                "arm_regions": getattr(track, "arm_regions", [])
             }
             
             with track.lock:
@@ -214,6 +215,7 @@ def load_project(file_path, audio_engine):
                 track.solo = tr_data["solo"]
                 track.armed = tr_data.get("armed", True)
                 track.input_channel = tr_data.get("input_channel", 0)
+                track.arm_regions = tr_data.get("arm_regions", [])
                 
                 # Deserialized effects list
                 effects_list = []
@@ -245,6 +247,7 @@ def load_project(file_path, audio_engine):
                     track.items.append(item)
                     
                 audio_engine.tracks.append(track)
+            audio_engine.tracks_list_cache = list(audio_engine.tracks)
                 
         # Restart stream if it was running or as default
         if was_running:
