@@ -43,12 +43,11 @@ With a premium dark aesthetic inspired by the "Nothing" design language, Graphit
 
 ## Installation
 
-### Method 1: Using Pre-built Executable (Recommended for general use)
-If you do not want to install Python, you can download a standalone build:
+### Method 1: Using Pre-built Installer (Recommended for general use)
+If you do not want to install Python, you can use the standalone installer:
 1. Navigate to the **[Releases Tab](https://github.com/cataclysmnik/graphite/releases)** on GitHub.
-2. Download the latest `Graphite-Windows-x64.zip` release package.
-3. Extract the ZIP archive to a folder of your choice.
-4. Double-click `Graphite.exe` to launch the application.
+2. Download the latest installer executable (e.g., `Graphite_0.9.0_Installer.exe`).
+3. Run the installer and follow the setup wizard to install it normally.
 
 > [!NOTE]
 > Standalone builds include a bundled Python runtime and all necessary dependencies out-of-the-box.
