@@ -46,24 +46,49 @@ class GraphiteSplashScreen(QSplashScreen):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 8, 8)
             
-            # 2. Draw Vector Waveform graphic in the middle
-            wave_pen = QPen()
-            wave_pen.setWidth(2)
-            
-            # Subtle horizontal gray gradient for the waveform lines
-            wave_gradient = QLinearGradient(100, 160, 420, 160)
-            wave_gradient.setColorAt(0, QColor("#2d2d30"))
-            wave_gradient.setColorAt(0.5, QColor("#8e8e93"))
-            wave_gradient.setColorAt(1, QColor("#2d2d30"))
-            wave_pen.setBrush(QBrush(wave_gradient))
-            painter.setPen(wave_pen)
-            
-            # Symmetric wave path
-            path = QPainterPath()
-            path.moveTo(80, 160)
-            path.cubicTo(160, 90, 200, 230, 260, 160)
-            path.cubicTo(320, 90, 360, 230, 440, 160)
-            painter.drawPath(path)
+            # 2. Draw Vector Waveform or logo.svg in the middle
+            logo_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logo.svg")
+            if os.path.exists(logo_path):
+                try:
+                    from PySide6.QtSvg import QSvgRenderer
+                    from PySide6.QtCore import QRectF
+                    renderer = QSvgRenderer(logo_path)
+                    logo_rect = QRectF(260.0 - 50.0, 170.0 - 50.0, 100.0, 100.0)
+                    renderer.render(painter, logo_rect)
+                except Exception as e:
+                    print(f"Failed to render logo.svg on splash: {e}")
+                    # Fallback to wave path
+                    wave_pen = QPen()
+                    wave_pen.setWidth(2)
+                    wave_gradient = QLinearGradient(100, 160, 420, 160)
+                    wave_gradient.setColorAt(0, QColor("#2d2d30"))
+                    wave_gradient.setColorAt(0.5, QColor("#8e8e93"))
+                    wave_gradient.setColorAt(1, QColor("#2d2d30"))
+                    wave_pen.setBrush(QBrush(wave_gradient))
+                    painter.setPen(wave_pen)
+                    path = QPainterPath()
+                    path.moveTo(80, 160)
+                    path.cubicTo(160, 90, 200, 230, 260, 160)
+                    path.cubicTo(320, 90, 360, 230, 440, 160)
+                    painter.drawPath(path)
+            else:
+                wave_pen = QPen()
+                wave_pen.setWidth(2)
+                
+                # Subtle horizontal gray gradient for the waveform lines
+                wave_gradient = QLinearGradient(100, 160, 420, 160)
+                wave_gradient.setColorAt(0, QColor("#2d2d30"))
+                wave_gradient.setColorAt(0.5, QColor("#8e8e93"))
+                wave_gradient.setColorAt(1, QColor("#2d2d30"))
+                wave_pen.setBrush(QBrush(wave_gradient))
+                painter.setPen(wave_pen)
+                
+                # Symmetric wave path
+                path = QPainterPath()
+                path.moveTo(80, 160)
+                path.cubicTo(160, 90, 200, 230, 260, 160)
+                path.cubicTo(320, 90, 360, 230, 440, 160)
+                painter.drawPath(path)
             
             # 3. Typography
             # Brand title

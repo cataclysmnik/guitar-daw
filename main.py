@@ -26,6 +26,11 @@ def main():
     # Initialize PySide Application
     app = QApplication(sys.argv)
     
+    from PySide6.QtGui import QIcon
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.svg")
+    if os.path.exists(logo_path):
+        app.setWindowIcon(QIcon(logo_path))
+    
     # Create and show startup splash screen
     splash = GraphiteSplashScreen()
     splash.show()

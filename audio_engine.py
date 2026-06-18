@@ -933,6 +933,11 @@ class AudioEngine:
             track.level_history = -60.0
             return np.zeros(frames, dtype=np.float32), np.zeros(frames, dtype=np.float32)
             
+        # Skip tracks that are permanently silent (not armed and no timeline items)
+        if not track.armed and len(track.items) == 0:
+            track.level_history = -60.0
+            return np.zeros(frames, dtype=np.float32), np.zeros(frames, dtype=np.float32)
+            
         # 1. Fetch real-time input block (if armed)
         realtime_in = None
         if track.armed:
@@ -993,30 +998,34 @@ class AudioEngine:
         # 3. Reshape mono input to pedalboard's expected format (channels, samples)
         pedalboard_in = np.reshape(track_in, (1, -1)).astype(np.float32)
         
-        # 3. Apply track effects sequentially
-        current_signal = pedalboard_in.copy()
-        try:
-            with track.lock:
-                for wrap in track.effects:
-                    if not wrap.is_active:
-                        continue
-                    effect_out = wrap.effect(current_signal, self.sample_rate, reset=False)
-                    mix = getattr(wrap, "mix", 1.0)
-                    gain_db = getattr(wrap, "gain_db", 0.0)
-                    gain = 10.0 ** (gain_db / 20.0)
-                    
-                    if effect_out.shape[0] != current_signal.shape[0]:
-                        if effect_out.shape[0] == 1 and current_signal.shape[0] == 2:
-                            effect_out = np.repeat(effect_out, 2, axis=0)
-                        elif effect_out.shape[0] == 2 and current_signal.shape[0] == 1:
-                            effect_out = np.mean(effect_out, axis=0, keepdims=True)
-                            
-                    processed = current_signal * (1.0 - mix) + effect_out * mix
-                    current_signal = processed * gain
-            pedalboard_out = current_signal
-        except Exception as e:
-            print(f"Pedalboard processing error on Track {track.name}: {e}")
-            pedalboard_out = np.zeros((pedalboard_in.shape[0], frames), dtype=np.float32)
+        # 3. Apply track effects sequentially (if active)
+        has_active_effects = any(wrap.is_active for wrap in track.effects)
+        if not has_active_effects:
+            pedalboard_out = pedalboard_in
+        else:
+            current_signal = pedalboard_in.copy()
+            try:
+                with track.lock:
+                    for wrap in track.effects:
+                        if not wrap.is_active:
+                            continue
+                        effect_out = wrap.effect(current_signal, self.sample_rate, reset=False)
+                        mix = getattr(wrap, "mix", 1.0)
+                        gain_db = getattr(wrap, "gain_db", 0.0)
+                        gain = 10.0 ** (gain_db / 20.0)
+                        
+                        if effect_out.shape[0] != current_signal.shape[0]:
+                            if effect_out.shape[0] == 1 and current_signal.shape[0] == 2:
+                                effect_out = np.repeat(effect_out, 2, axis=0)
+                            elif effect_out.shape[0] == 2 and current_signal.shape[0] == 1:
+                                effect_out = np.mean(effect_out, axis=0, keepdims=True)
+                                
+                        processed = current_signal * (1.0 - mix) + effect_out * mix
+                        current_signal = processed * gain
+                pedalboard_out = current_signal
+            except Exception as e:
+                print(f"Pedalboard processing error on Track {track.name}: {e}")
+                pedalboard_out = np.zeros((pedalboard_in.shape[0], frames), dtype=np.float32)
             
         # Write to visualizer buffer
         if pedalboard_out.shape[1] > 0:
@@ -1091,22 +1100,16 @@ class AudioEngine:
             
         has_solo = any(t.solo for t in tracks_copy if not t.mute)
         
-        # Process track DSP loops in parallel using the pre-allocated ThreadPoolExecutor
-        futures = []
+        # Process track DSP loops sequentially on the audio callback thread
         for track in tracks_copy:
-            futures.append(self.thread_pool.submit(
-                self._process_track_dsp,
-                track, indata, demo_input, play_active, is_recording_state, curr_playhead, frames, has_solo
-            ))
-            
-        # Accumulate results to main mix
-        for f in futures:
             try:
-                track_left, track_right = f.result()
+                track_left, track_right = self._process_track_dsp(
+                    track, indata, demo_input, play_active, is_recording_state, curr_playhead, frames, has_solo
+                )
                 mixed_out[:, 0] += track_left
                 mixed_out[:, 1] += track_right
             except Exception as e:
-                print(f"Error processing track in parallel thread pool: {e}")
+                print(f"Error processing track: {e}")
                 
         # Metronome click trigger and mixing logic
         if self.metronome_enabled and play_active:
