@@ -1400,6 +1400,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 self.audio_engine.main_volume = 0.0
                 self.audio_engine.demo_loop_active = False
             self.current_project_path = None
+            self.audio_engine.current_project_directory = None
             self.project_dirty = False
             self.update_title_bar()
             if hasattr(self, 'mixer_widget') and hasattr(self.mixer_widget, 'master'):

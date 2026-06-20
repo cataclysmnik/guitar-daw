@@ -378,6 +378,7 @@ class AudioEngine:
         self.stream = None
         self.main_volume = 0.0  # dB, range: -60.0 to +6.0
         self.main_level_history = [-60.0, -60.0]
+        self.current_project_directory = None
         
         self.play_state = "stopped"         # "stopped", "playing", "paused", "recording"
         self.playhead_samples = 0           # current playback cursor position in samples
@@ -411,10 +412,60 @@ class AudioEngine:
         self._playback_buf = np.zeros(16384, dtype=np.float32)
         self._realtime_buf = np.zeros(16384, dtype=np.float32)
         
+    def get_settings_path(self):
+        appdata = os.environ.get('APPDATA')
+        if appdata:
+            dir_path = os.path.join(appdata, "Graphite")
+        else:
+            dir_path = os.path.join(os.path.expanduser('~'), ".graphite")
+        try:
+            os.makedirs(dir_path, exist_ok=True)
+        except Exception:
+            pass
+        
+        user_settings_path = os.path.join(dir_path, "audio_settings.json")
+        if os.path.exists(user_settings_path):
+            return user_settings_path
+            
+        # Fallback to check if default config exists in the installation directory
+        local_settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio_settings.json")
+        if os.path.exists(local_settings_path):
+            try:
+                import shutil
+                shutil.copy2(local_settings_path, user_settings_path)
+                return user_settings_path
+            except Exception:
+                return local_settings_path
+                
+        return user_settings_path
+
+    def get_recordings_dir(self):
+        proj_dir = getattr(self, "current_project_directory", None)
+        if proj_dir and os.path.exists(proj_dir):
+            try:
+                test_file = os.path.join(proj_dir, ".test_write")
+                with open(test_file, "w") as f:
+                    f.write("")
+                os.remove(test_file)
+                return proj_dir
+            except Exception:
+                pass
+                
+        user_docs = os.path.expanduser("~/Documents")
+        if not os.path.exists(user_docs):
+            user_docs = os.path.expanduser("~")
+            
+        rec_dir = os.path.join(user_docs, "Graphite", "Recordings")
+        try:
+            os.makedirs(rec_dir, exist_ok=True)
+        except Exception:
+            pass
+        return rec_dir
+
     def save_settings(self):
         """Saves advanced audio engine settings to a JSON file."""
         import json
-        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio_settings.json")
+        settings_path = self.get_settings_path()
         try:
             settings_data = {
                 "audio_system": self.audio_system,
@@ -444,7 +495,7 @@ class AudioEngine:
     def load_settings(self):
         """Loads advanced audio engine settings from JSON file if it exists."""
         import json
-        settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio_settings.json")
+        settings_path = self.get_settings_path()
         if not os.path.exists(settings_path):
             return
         try:
@@ -745,7 +796,7 @@ class AudioEngine:
                 if track.armed:
                     audio_2d = np.reshape(recorded_audio, (1, -1))
                     filename = f"recorded_track_{track.track_id}_{uuid.uuid4().hex[:6]}.wav"
-                    file_path = os.path.join(os.getcwd(), filename)
+                    file_path = os.path.join(self.get_recordings_dir(), filename)
                     item = AudioItem(start_sample, sr, file_path=file_path, audio_data=audio_2d)
                     try:
                         item.save_to_wav(file_path)
@@ -769,7 +820,7 @@ class AudioEngine:
                             if len(sliced_audio) > 0:
                                 audio_2d = np.reshape(sliced_audio, (1, -1))
                                 filename = f"recorded_track_{track.track_id}_{uuid.uuid4().hex[:6]}.wav"
-                                file_path = os.path.join(os.getcwd(), filename)
+                                file_path = os.path.join(self.get_recordings_dir(), filename)
                                 item = AudioItem(overlap_start, sr, file_path=file_path, audio_data=audio_2d)
                                 try:
                                     item.save_to_wav(file_path)

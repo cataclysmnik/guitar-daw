@@ -161,6 +161,7 @@ def save_project(file_path, audio_engine):
         with open(file_path, "w") as f:
             json.dump(project_data, f, indent=4)
         print(f"Project saved to {file_path}")
+        audio_engine.current_project_directory = os.path.dirname(os.path.abspath(file_path))
         return True
     except Exception as e:
         print(f"Failed to save project: {e}")
@@ -254,6 +255,7 @@ def load_project(file_path, audio_engine):
             audio_engine.start_stream()
             
         print(f"Project loaded from {file_path}")
+        audio_engine.current_project_directory = os.path.dirname(os.path.abspath(file_path))
         return True
     except Exception as e:
         print(f"Failed to load project: {e}")

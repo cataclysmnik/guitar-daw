@@ -84,8 +84,15 @@ class ExportDialog(FramelessWindowMixin, QDialog):
         
         self.txt_path = QLineEdit()
         self.txt_path.setObjectName("PathLineEdit")
-        # Default filename in user's working dir
-        self.txt_path.setText(os.path.join(os.getcwd(), "project_export.wav"))
+        # Default filename in user-writable directory
+        proj_dir = getattr(self.audio_engine, "current_project_directory", None)
+        if proj_dir and os.path.exists(proj_dir):
+            default_dir = proj_dir
+        else:
+            default_dir = os.path.expanduser("~/Documents")
+            if not os.path.exists(default_dir):
+                default_dir = os.path.expanduser("~")
+        self.txt_path.setText(os.path.join(default_dir, "project_export.wav"))
         path_layout.addWidget(self.txt_path)
         
         btn_browse = QPushButton("Browse...")
