@@ -207,6 +207,7 @@ class AudioItem:
         self.active_take_index = 0          # fallback active take index
         self.comp_ranges = []               # list of [start_sample, end_sample, take_index]
         self.comp_expanded = False          # UI expansion state
+        self.custom_name = None
         
         if file_path and os.path.exists(file_path):
             self.load_from_wav(file_path)

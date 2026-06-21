@@ -16,6 +16,18 @@ def get_backing_tracks_dir():
     os.makedirs(backing_dir, exist_ok=True)
     return backing_dir
 
+class BackingTracksListWidget(QListWidget):
+    def mimeData(self, items):
+        from PySide6.QtCore import QMimeData, QUrl
+        mime_data = QMimeData()
+        urls = []
+        for item in items:
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            if file_path:
+                urls.append(QUrl.fromLocalFile(file_path))
+        mime_data.setUrls(urls)
+        return mime_data
+
 class BackingTrackManagerWidget(QWidget):
     def __init__(self, main_window, audio_engine, parent=None):
         super().__init__(parent)
@@ -70,8 +82,9 @@ class BackingTrackManagerWidget(QWidget):
         layout.addLayout(top_bar)
         
         # --- List widget showing the universal files ---
-        self.tracks_list = QListWidget()
+        self.tracks_list = BackingTracksListWidget()
         self.tracks_list.setObjectName("TracksList")
+        self.tracks_list.setDragEnabled(True)
         self.tracks_list.itemDoubleClicked.connect(self.load_selected_track)
         self.tracks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tracks_list.customContextMenuRequested.connect(self.show_context_menu)
@@ -116,7 +129,7 @@ class BackingTrackManagerWidget(QWidget):
                 padding: 5px;
             }
             QListWidget#TracksList::item {
-                padding: 8px 10px;
+                padding: 4px 8px;
                 border-bottom: 1px solid #111112;
             }
             QListWidget#TracksList::item:hover {
@@ -143,7 +156,8 @@ class BackingTrackManagerWidget(QWidget):
             
         for f in files:
             if f.lower().endswith(audio_extensions):
-                item = QListWidgetItem(f)
+                display_name = os.path.splitext(f)[0]
+                item = QListWidgetItem(display_name)
                 item.setData(Qt.ItemDataRole.UserRole, os.path.join(backing_dir, f))
                 self.tracks_list.addItem(item)
                 
@@ -191,7 +205,7 @@ class BackingTrackManagerWidget(QWidget):
             return
             
         file_path = item.data(Qt.ItemDataRole.UserRole)
-        filename = item.text()
+        filename = os.path.basename(file_path)
         
         if not os.path.exists(file_path):
             QMessageBox.warning(self, "Missing File", "The selected backing track file no longer exists.")
@@ -213,8 +227,16 @@ class BackingTrackManagerWidget(QWidget):
             new_track = self.audio_engine.add_track(track_name)
             sample_rate = self.audio_engine.sample_rate
             
-            # Load item
-            loaded_item = AudioItem(start_sample=0, sample_rate=sample_rate, file_path=file_path)
+            # Load item in background thread using the engine's thread pool
+            future = self.audio_engine.thread_pool.submit(
+                lambda: AudioItem(start_sample=0, sample_rate=sample_rate, file_path=file_path)
+            )
+            while not future.done():
+                QApplication.processEvents()
+                import time
+                time.sleep(0.01)
+                
+            loaded_item = future.result()
             if loaded_item.audio_data is not None:
                 with new_track.lock:
                     new_track.items.append(loaded_item)
@@ -271,7 +293,7 @@ class BackingTrackManagerWidget(QWidget):
 
     def rename_track_file(self, item):
         old_path = item.data(Qt.ItemDataRole.UserRole)
-        old_filename = item.text()
+        old_filename = os.path.basename(old_path)
         base_name, ext = os.path.splitext(old_filename)
         
         new_name, ok = QInputDialog.getText(self, "Rename Backing Track", "New name for backing track file:", text=base_name)
@@ -291,7 +313,7 @@ class BackingTrackManagerWidget(QWidget):
 
     def delete_track_file(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)
-        filename = item.text()
+        filename = os.path.basename(file_path)
         
         reply = QMessageBox.question(
             self, "Delete Backing Track",

@@ -745,7 +745,7 @@ class TimelineLanesWidget(QWidget):
         for track in self.audio_engine.tracks:
             y_track_top = self.get_track_top(track)
             for item in track.items:
-                if item.takes and item.comp_expanded:
+                if item.takes and len(item.takes) > 1 and item.comp_expanded:
                     item_start = item.start_sample
                     item_end = item.start_sample + item.length_samples
                     if item_start <= click_sample <= item_end:
@@ -1220,6 +1220,10 @@ class TimelineLanesWidget(QWidget):
             action_convert.triggered.connect(lambda: self.convert_clip_to_backing_track(target, track))
             menu.addAction(action_convert)
             
+            action_rename = QAction("Rename Clip...", self)
+            action_rename.triggered.connect(self.rename_selected_clip)
+            menu.addAction(action_rename)
+            
             menu.addSeparator()
             
             action_delete = QAction("Delete Clip", self)
@@ -1277,6 +1281,27 @@ class TimelineLanesWidget(QWidget):
         self.update()
         if hasattr(self.main_window, 'mark_project_dirty'):
             self.main_window.mark_project_dirty()
+
+    def rename_selected_clip(self):
+        from PySide6.QtWidgets import QInputDialog
+        target = self.selected_item
+        if not target or self.selected_target_type != "item":
+            return
+            
+        default_name = target.custom_name
+        if not default_name and target.file_path:
+            default_name = os.path.splitext(os.path.basename(target.file_path))[0]
+        if not default_name:
+            default_name = "Clip"
+            
+        new_name, ok = QInputDialog.getText(self, "Rename Clip", "Enter new clip name:", text=default_name)
+        if ok and new_name.strip():
+            if hasattr(self.main_window, 'undo_manager'):
+                self.main_window.undo_manager.push_state(f"Rename Clip to {new_name.strip()}")
+            target.custom_name = new_name.strip()
+            self.update()
+            if hasattr(self.main_window, 'mark_project_dirty'):
+                self.main_window.mark_project_dirty()
 
     def remove_portions_from_track(self, track, start_sample, end_sample):
         """
@@ -1442,15 +1467,35 @@ class TimelineLanesWidget(QWidget):
                 "Audio Files (*.wav *.mp3 *.flac *.ogg *.m4a *.wma *.aiff *.aif);;All Files (*)"
             )
             if file_path:
-                # Create and add item
-                item = AudioItem(start_sample, sample_rate, file_path=file_path)
-                if item.audio_data is not None:
-                    # Copy WAV next to project later, or keep path
-                    self.audio_engine.add_item_to_track(track, item)
-                    track.update_pedalboard(self.audio_engine.sample_rate)
-                    self.update_geometry()
-                    if hasattr(self, 'main_window') and self.main_window:
-                        self.main_window.mark_project_dirty()
+                # Load the audio file asynchronously
+                from widgets.loading_popup import LoadingPopup
+                from PySide6.QtWidgets import QApplication
+                
+                filename = os.path.basename(file_path)
+                popup = LoadingPopup(f"IMPORTING AUDIO FILE:\n{filename.upper()}", self.main_window)
+                popup.show()
+                QApplication.processEvents()
+                
+                try:
+                    future = self.audio_engine.thread_pool.submit(
+                        lambda: AudioItem(start_sample, sample_rate, file_path=file_path)
+                    )
+                    while not future.done():
+                        QApplication.processEvents()
+                        import time
+                        time.sleep(0.01)
+                        
+                    item = future.result()
+                    if item.audio_data is not None:
+                        # Copy WAV next to project later, or keep path
+                        self.audio_engine.add_item_to_track(track, item)
+                        track.update_pedalboard(self.audio_engine.sample_rate)
+                        self.update_geometry()
+                        if hasattr(self, 'main_window') and self.main_window:
+                            self.main_window.mark_project_dirty()
+                finally:
+                    popup.close()
+                    QApplication.processEvents()
                         
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1589,7 +1634,10 @@ class TimelineLanesWidget(QWidget):
                         name_str = f"Take Folder ({len(item.takes)} Takes)"
                     else:
                         painter.setPen(QColor("#88888c"))
-                        name_str = os.path.basename(item.file_path) if item.file_path else "Recorded Clip"
+                        if getattr(item, "custom_name", None):
+                            name_str = item.custom_name
+                        else:
+                            name_str = os.path.basename(item.file_path) if item.file_path else "Recorded Clip"
                     
                     # Clip text to container width
                     metrics = painter.fontMetrics()
@@ -1819,14 +1867,34 @@ class TimelineLanesWidget(QWidget):
         else:
             track = self.audio_engine.tracks[track_idx]
             
+        from widgets.loading_popup import LoadingPopup
+        from PySide6.QtWidgets import QApplication
+        
         for file_path in audio_files:
             if os.path.exists(file_path):
-                # Create and load AudioItem
-                item = AudioItem(start_sample, sample_rate, file_path=file_path)
-                if item.audio_data is not None:
-                    # Copy WAV next to project later, or keep path
-                    self.audio_engine.add_item_to_track(track, item)
-                    track.update_pedalboard(self.audio_engine.sample_rate)
+                filename = os.path.basename(file_path)
+                popup = LoadingPopup(f"IMPORTING AUDIO FILE:\n{filename.upper()}", self.main_window)
+                popup.show()
+                QApplication.processEvents()
+                
+                try:
+                    # Load item in background thread
+                    future = self.audio_engine.thread_pool.submit(
+                        lambda: AudioItem(start_sample, sample_rate, file_path=file_path)
+                    )
+                    while not future.done():
+                        QApplication.processEvents()
+                        import time
+                        time.sleep(0.01)
+                        
+                    item = future.result()
+                    if item.audio_data is not None:
+                        # Copy WAV next to project later, or keep path
+                        self.audio_engine.add_item_to_track(track, item)
+                        track.update_pedalboard(self.audio_engine.sample_rate)
+                finally:
+                    popup.close()
+                    QApplication.processEvents()
                     
         self.update_geometry()
         if hasattr(self, 'main_window') and self.main_window:

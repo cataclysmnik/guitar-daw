@@ -50,6 +50,7 @@ class UndoRedoManager:
                 c.comp_expanded = item.comp_expanded
                 c.comp_ranges = [list(r) for r in item.comp_ranges]
                 c.takes = [clone_item(take) for take in item.takes]
+                c.custom_name = getattr(item, "custom_name", None)
                 if hasattr(item, '_cached_waveform'):
                     c._cached_waveform = item._cached_waveform
                 if hasattr(item, '_cached_comp_waveform'):

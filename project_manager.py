@@ -151,7 +151,8 @@ def save_project(file_path, audio_engine):
                         "sample_rate": item.sample_rate,
                         "file_path": rel_path,
                         "offset_samples": item.offset_samples,
-                        "length_samples": item.length_samples
+                        "length_samples": item.length_samples,
+                        "custom_name": getattr(item, "custom_name", None)
                     }
                     track_data["items"].append(item_data)
                     
@@ -245,6 +246,7 @@ def load_project(file_path, audio_engine):
                         item.offset_samples = item_data["offset_samples"]
                     if "length_samples" in item_data:
                         item.length_samples = item_data["length_samples"]
+                    item.custom_name = item_data.get("custom_name", None)
                     track.items.append(item)
                     
                 audio_engine.tracks.append(track)

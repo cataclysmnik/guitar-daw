@@ -313,6 +313,11 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self.action_redo.triggered.connect(self.on_redo)
         edit_menu.addAction(self.action_redo)
         
+        self.action_rename_f2 = QAction("Rename", self)
+        self.action_rename_f2.setShortcut(QKeySequence(Qt.Key.Key_F2))
+        self.action_rename_f2.triggered.connect(self.on_f2_rename_pressed)
+        edit_menu.addAction(self.action_rename_f2)
+        
         # Track Menu
         track_menu = menu_bar.addMenu("Track")
         
@@ -1102,6 +1107,37 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         # Link to effects rack
         self.effects_rack.set_track(track)
         
+    def on_f2_rename_pressed(self):
+        # 1. Check if backing tracks manager list has focus
+        if hasattr(self, 'backing_track_manager') and self.backing_track_manager.tracks_list.hasFocus():
+            item = self.backing_track_manager.tracks_list.currentItem()
+            if item:
+                self.backing_track_manager.rename_track_file(item)
+            return
+            
+        # 2. Check if timeline lanes widget has focus and a clip is selected
+        if hasattr(self, 'timeline') and self.timeline.lanes.hasFocus():
+            if self.timeline.lanes.selected_item and self.timeline.lanes.selected_target_type == "item":
+                self.timeline.lanes.rename_selected_clip()
+                return
+                
+        # 3. Otherwise, rename the selected track
+        if self.selected_track:
+            self.rename_selected_track()
+            
+    def rename_selected_track(self):
+        from PySide6.QtWidgets import QInputDialog
+        track = self.selected_track
+        if not track:
+            return
+        new_name, ok = QInputDialog.getText(self, "Rename Track", "Enter new name for track:", text=track.name)
+        if ok and new_name.strip():
+            if hasattr(self, 'undo_manager'):
+                self.undo_manager.push_state(f"Rename Track to {new_name.strip()}")
+            track.name = new_name.strip()
+            self.refresh_track_cards()
+            self.mark_project_dirty()
+        
     def focus_fx_rack(self, track):
         """Forces selecting the track and highlighting the effects rack."""
         self.on_track_selected(track)
@@ -1153,9 +1189,17 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 new_track = self.audio_engine.add_track("Backing Track")
                 sample_rate = self.audio_engine.sample_rate
                 
-                # Load the audio file into an AudioItem at sample 0
+                # Load the audio file into an AudioItem at sample 0 in background thread
                 from audio_engine import AudioItem
-                item = AudioItem(start_sample=0, sample_rate=sample_rate, file_path=file_path)
+                future = self.audio_engine.thread_pool.submit(
+                    lambda: AudioItem(start_sample=0, sample_rate=sample_rate, file_path=file_path)
+                )
+                while not future.done():
+                    QApplication.processEvents()
+                    import time
+                    time.sleep(0.01)
+                    
+                item = future.result()
                 if item.audio_data is not None:
                     with new_track.lock:
                         new_track.items.append(item)
