@@ -88,6 +88,8 @@ class BackingTrackManagerWidget(QWidget):
         self.tracks_list.itemDoubleClicked.connect(self.load_selected_track)
         self.tracks_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tracks_list.customContextMenuRequested.connect(self.show_context_menu)
+        self.tracks_list.setEditTriggers(QListWidget.EditTrigger.NoEditTriggers)
+        self.tracks_list.itemChanged.connect(self.on_item_changed)
         layout.addWidget(self.tracks_list)
         
         # Stylesheet
@@ -140,6 +142,15 @@ class BackingTrackManagerWidget(QWidget):
                 background-color: #ffffff;
                 color: #000000;
             }
+            QListWidget#TracksList QLineEdit {
+                background-color: #111112;
+                color: #ffffff;
+                border: 1px solid #ffffff;
+                border-radius: 2px;
+                padding: 1px 4px;
+                font-family: "Consolas", monospace;
+                font-size: 11px;
+            }
         """)
 
     def refresh_list(self):
@@ -158,6 +169,7 @@ class BackingTrackManagerWidget(QWidget):
             if f.lower().endswith(audio_extensions):
                 display_name = os.path.splitext(f)[0]
                 item = QListWidgetItem(display_name)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                 item.setData(Qt.ItemDataRole.UserRole, os.path.join(backing_dir, f))
                 self.tracks_list.addItem(item)
                 
@@ -292,24 +304,39 @@ class BackingTrackManagerWidget(QWidget):
         menu.exec(self.tracks_list.mapToGlobal(pos))
 
     def rename_track_file(self, item):
+        self.tracks_list.editItem(item)
+
+    def on_item_changed(self, item):
         old_path = item.data(Qt.ItemDataRole.UserRole)
+        if not old_path:
+            return
+            
         old_filename = os.path.basename(old_path)
         base_name, ext = os.path.splitext(old_filename)
+        new_name = item.text().strip()
         
-        new_name, ok = QInputDialog.getText(self, "Rename Backing Track", "New name for backing track file:", text=base_name)
-        if ok and new_name.strip():
-            new_filename = new_name.strip() + ext
-            new_path = os.path.join(get_backing_tracks_dir(), new_filename)
+        if not new_name or new_name == base_name:
+            item.setText(base_name)
+            return
             
-            if os.path.exists(new_path):
-                QMessageBox.warning(self, "Duplicate Name", "A file with this name already exists in the backing tracks folder.")
-                return
-                
-            try:
-                os.rename(old_path, new_path)
-                self.refresh_list()
-            except Exception as e:
-                QMessageBox.critical(self, "Rename Error", f"Failed to rename backing track file:\n{e}")
+        new_filename = new_name + ext
+        new_path = os.path.join(get_backing_tracks_dir(), new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Duplicate Name", "A file with this name already exists in the backing tracks folder.")
+            item.setText(base_name)
+            return
+            
+        # Temporarily block signals to avoid recursion during setText/setData
+        self.tracks_list.blockSignals(True)
+        try:
+            os.rename(old_path, new_path)
+            item.setData(Qt.ItemDataRole.UserRole, new_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Rename Error", f"Failed to rename backing track file:\n{e}")
+            item.setText(base_name)
+        finally:
+            self.tracks_list.blockSignals(False)
 
     def delete_track_file(self, item):
         file_path = item.data(Qt.ItemDataRole.UserRole)

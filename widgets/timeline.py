@@ -791,26 +791,6 @@ class TimelineLanesWidget(QWidget):
                             self.main_window.mark_project_dirty()
                         return
                         
-        # 3. Check if right button to start timeline deletion drag (on main track lane)
-        if event.button() == Qt.MouseButton.RightButton:
-            if hasattr(self, 'main_window') and hasattr(self.main_window, 'undo_manager'):
-                self.main_window.undo_manager.push_state("Remove Clip Portion")
-            self.right_drag_active = True
-            self.right_drag_start_x = x
-            self.right_drag_current_x = x
-            self.right_drag_start_sample = click_sample
-            
-            # Find which track we clicked on
-            y_curr = 0
-            self.right_drag_track = None
-            for track in self.audio_engine.tracks:
-                h_track = self.get_track_height(track)
-                if y_curr <= y < y_curr + h_track:
-                    self.right_drag_track = track
-                    break
-                y_curr += h_track
-            self.update()
-            return
 
         target, target_type, track, hover_type = self.get_hover_state(x, y)
         
@@ -946,11 +926,6 @@ class TimelineLanesWidget(QWidget):
         x = event.position().x()
         y = event.position().y()
         
-        # Handle right drag deletion
-        if getattr(self, "right_drag_active", False):
-            self.right_drag_current_x = x
-            self.update()
-            return
             
         # Handle active right swipe comp de-selection
         if getattr(self, 'right_swipe_item', None) is not None:
@@ -1126,25 +1101,8 @@ class TimelineLanesWidget(QWidget):
             else:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
                 
-    def mouseReleaseEvent(self, event):
-        if getattr(self, "right_drag_active", False):
-            self.right_drag_active = False
-            track = getattr(self, "right_drag_track", None)
-            if track:
-                sample_rate = self.audio_engine.sample_rate
-                start_x = min(self.right_drag_start_x, self.right_drag_current_x)
-                end_x = max(self.right_drag_start_x, self.right_drag_current_x)
-                start_sample = int((start_x / self.pixels_per_second) * sample_rate)
-                end_sample = int((end_x / self.pixels_per_second) * sample_rate)
-                if start_sample < end_sample and (end_sample - start_sample) > 100:
-                    self.remove_portions_from_track(track, start_sample, end_sample)
-                    self._ignore_context_menu = True
-            self.right_drag_track = None
-            if hasattr(self, 'main_window') and self.main_window:
-                self.main_window.mark_project_dirty()
-            self.update()
-            return
 
+    def mouseReleaseEvent(self, event):
         if getattr(self, 'right_swipe_item', None) is not None:
             self.right_swipe_item.update_cached_comp_data()
             self.right_swipe_item = None
@@ -1283,7 +1241,6 @@ class TimelineLanesWidget(QWidget):
             self.main_window.mark_project_dirty()
 
     def rename_selected_clip(self):
-        from PySide6.QtWidgets import QInputDialog
         target = self.selected_item
         if not target or self.selected_target_type != "item":
             return
@@ -1294,14 +1251,69 @@ class TimelineLanesWidget(QWidget):
         if not default_name:
             default_name = "Clip"
             
-        new_name, ok = QInputDialog.getText(self, "Rename Clip", "Enter new clip name:", text=default_name)
-        if ok and new_name.strip():
-            if hasattr(self.main_window, 'undo_manager'):
-                self.main_window.undo_manager.push_state(f"Rename Clip to {new_name.strip()}")
-            target.custom_name = new_name.strip()
-            self.update()
-            if hasattr(self.main_window, 'mark_project_dirty'):
-                self.main_window.mark_project_dirty()
+        target_track = None
+        for track in self.audio_engine.tracks:
+            if target in track.items:
+                target_track = track
+                break
+                
+        if not target_track:
+            return
+            
+        y_top = self.get_track_top(target_track) + 5
+        item_len = target.length_samples
+        start_x = int((target.start_sample / target.sample_rate) * self.pixels_per_second)
+        end_x = int(((target.start_sample + item_len) / target.sample_rate) * self.pixels_per_second)
+        item_width = max(2, end_x - start_x)
+        
+        edit_x = max(0, start_x)
+        edit_y = y_top + 2
+        edit_w = min(item_width, self.width() - edit_x)
+        edit_w = max(edit_w, 100)
+        edit_h = 20
+        
+        from PySide6.QtWidgets import QLineEdit
+        class InlineClipEditor(QLineEdit):
+            def keyPressEvent(self, event):
+                if event.key() == Qt.Key.Key_Escape:
+                    self.setProperty("cancelled", True)
+                    self.clearFocus()
+                else:
+                    super().keyPressEvent(event)
+                    
+        edit = InlineClipEditor(self)
+        edit.setText(default_name)
+        edit.setGeometry(edit_x, edit_y, edit_w, edit_h)
+        edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #000000;
+                color: #ffffff;
+                border: 1px solid #ffffff;
+                border-radius: 2px;
+                font-family: "Consolas", monospace;
+                font-size: 11px;
+                padding-left: 2px;
+            }
+        """)
+        
+        def finish_editing():
+            if edit.property("cancelled"):
+                edit.deleteLater()
+                return
+            new_name = edit.text().strip()
+            if new_name and new_name != default_name:
+                if hasattr(self.main_window, 'undo_manager'):
+                    self.main_window.undo_manager.push_state(f"Rename Clip to {new_name}")
+                target.custom_name = new_name
+                self.update()
+                if hasattr(self.main_window, 'mark_project_dirty'):
+                    self.main_window.mark_project_dirty()
+            edit.deleteLater()
+            
+        edit.editingFinished.connect(finish_editing)
+        edit.show()
+        edit.setFocus()
+        edit.selectAll()
 
     def remove_portions_from_track(self, track, start_sample, end_sample):
         """
@@ -1814,17 +1826,6 @@ class TimelineLanesWidget(QWidget):
                 painter.setPen(QPen(QColor("#ffffff"), 1.0, Qt.PenStyle.DashLine))
                 painter.drawRect(select_rect)
                 
-            # 5. Draw Right Drag Deletion Region
-            if getattr(self, "right_drag_active", False) and getattr(self, "right_drag_track", None) is not None:
-                track = self.right_drag_track
-                y_track_top = self.get_track_top(track)
-                h_track = self.get_track_height(track)
-                start_x = min(self.right_drag_start_x, self.right_drag_current_x)
-                end_x = max(self.right_drag_start_x, self.right_drag_current_x)
-                
-                painter.fillRect(int(start_x), int(y_track_top), int(end_x - start_x), int(h_track), QColor(255, 0, 0, 45))
-                painter.setPen(QPen(QColor(255, 0, 0, 180), 1.0, Qt.PenStyle.DashLine))
-                painter.drawRect(int(start_x), int(y_track_top), int(end_x - start_x), int(h_track))
         finally:
             painter.end()
 

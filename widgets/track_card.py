@@ -421,11 +421,21 @@ class TrackCard(QFrame):
 
     def on_rename(self):
         new_name = self.name_edit.text().strip()
-        if new_name:
+        if new_name and new_name != self.track.name:
+            main_win = self.window()
+            if main_win and hasattr(main_win, 'undo_manager'):
+                main_win.undo_manager.push_state(f"Rename Track to {new_name}")
             self.track.name = new_name
             self.update()
             self.mark_dirty()
-            
+            if main_win:
+                if hasattr(main_win, 'mixer_widget') and main_win.mixer_widget:
+                    main_win.mixer_widget.rebuild()
+                if hasattr(main_win, 'effects_rack') and main_win.effects_rack:
+                    if hasattr(main_win.effects_rack, 'selected_track') and main_win.effects_rack.selected_track == self.track:
+                        main_win.effects_rack.set_track(self.track)
+        else:
+            self.name_edit.setText(self.track.name)
     def on_mute_clicked(self):
         self.track.mute = self.btn_mute.isChecked()
         self.mark_dirty()

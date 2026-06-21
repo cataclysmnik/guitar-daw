@@ -1123,7 +1123,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
                 
         # 3. Otherwise, rename the selected track
         if self.selected_track:
-            self.rename_selected_track()
+            for card in self.track_cards:
+                if card.track == self.selected_track:
+                    card.trigger_rename()
+                    return
             
     def rename_selected_track(self):
         from PySide6.QtWidgets import QInputDialog
