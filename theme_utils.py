@@ -134,7 +134,7 @@ class CustomTitleBar(QWidget):
         self.setObjectName("CustomTitleBar")
         
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(15, 0, 10, 0)
+        layout.setContentsMargins(15, 0, 0, 0)
         layout.setSpacing(0)
         
         # Window Title label
