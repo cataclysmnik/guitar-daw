@@ -11,6 +11,8 @@ a = Analysis(
         ('widgets/', 'widgets/'),             # Includes your custom PySide6 UI files
         ('audio_settings.json', '.'),         # Includes your JSON config in the root
         ('logo.ico', '.'),                     # Includes your main logo in the root
+        ('logo.png', '.'),                     # Include PNG logo
+        ('splashscreen.png', '.'),             # Include PNG splash screen
     ],
     hiddenimports=[
         'PySide6.QtCore',
