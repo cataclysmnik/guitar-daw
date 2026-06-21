@@ -7,8 +7,8 @@ class GraphiteSplashScreen(QSplashScreen):
     """A premium, dynamically drawn splash screen for Graphite DAW."""
     def __init__(self):
         super().__init__()
-        # Set window properties: frameless, stay on top, transparent background support
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        # Set window properties: frameless, transparent background support
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.resize(520, 320)
         
@@ -46,18 +46,18 @@ class GraphiteSplashScreen(QSplashScreen):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 8, 8)
             
-            # 2. Draw Vector Waveform or logo.ico in the middle
+            # 2. Draw Vector Waveform or logo.svg in the middle
             from theme_utils import get_resource_path
-            logo_path = get_resource_path("logo.ico")
+            logo_path = get_resource_path("logo.svg")
             if os.path.exists(logo_path):
                 try:
-                    from PySide6.QtGui import QPixmap
+                    from PySide6.QtSvg import QSvgRenderer
                     from PySide6.QtCore import QRect
-                    pix = QPixmap(logo_path)
-                    logo_rect = QRect(260 - 50, 170 - 50, 100, 100)
-                    painter.drawPixmap(logo_rect, pix)
+                    renderer = QSvgRenderer(logo_path)
+                    logo_rect = QRect(260 - 45, 140, 90, 90)
+                    renderer.render(painter, logo_rect)
                 except Exception as e:
-                    print(f"Failed to render logo.ico on splash: {e}")
+                    print(f"Failed to render logo.svg on splash: {e}")
                     # Fallback to wave path
                     wave_pen = QPen()
                     wave_pen.setWidth(2)
@@ -97,17 +97,17 @@ class GraphiteSplashScreen(QSplashScreen):
             font_title.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6)
             painter.setFont(font_title)
             painter.setPen(QColor("#ffffff"))
-            painter.drawText(QRect(0, 70, self.width(), 50), Qt.AlignmentFlag.AlignCenter, "GRAPHITE")
+            painter.drawText(QRect(0, 50, self.width(), 50), Qt.AlignmentFlag.AlignCenter, "GRAPHITE")
             
             # Brand sub-header
             font_sub = QFont("Segoe UI", 8, QFont.Weight.Medium)
             font_sub.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 4)
             painter.setFont(font_sub)
             painter.setPen(QColor("#7a7a7d"))
-            painter.drawText(QRect(0, 115, self.width(), 20), Qt.AlignmentFlag.AlignCenter, "DIGITAL AUDIO WORKSTATION")
+            painter.drawText(QRect(0, 95, self.width(), 20), Qt.AlignmentFlag.AlignCenter, "DIGITAL AUDIO WORKSTATION")
             
             # 4. Progress bar line (sleek and modern 3px)
-            bar_y = 260
+            bar_y = 265
             bar_x = 40
             bar_w = self.width() - 80
             bar_h = 3
