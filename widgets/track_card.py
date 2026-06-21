@@ -29,6 +29,12 @@ class DoubleClickLineEdit(QLineEdit):
         self.deselect()
         super().focusOutEvent(event)
 
+    def mousePressEvent(self, event):
+        if self.isReadOnly():
+            event.ignore()
+        else:
+            super().mousePressEvent(event)
+
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape):
             self.clearFocus()
