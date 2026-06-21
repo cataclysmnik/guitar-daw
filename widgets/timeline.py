@@ -1136,8 +1136,9 @@ class TimelineLanesWidget(QWidget):
                 end_x = max(self.right_drag_start_x, self.right_drag_current_x)
                 start_sample = int((start_x / self.pixels_per_second) * sample_rate)
                 end_sample = int((end_x / self.pixels_per_second) * sample_rate)
-                if start_sample < end_sample:
+                if start_sample < end_sample and (end_sample - start_sample) > 100:
                     self.remove_portions_from_track(track, start_sample, end_sample)
+                    self._ignore_context_menu = True
             self.right_drag_track = None
             if hasattr(self, 'main_window') and self.main_window:
                 self.main_window.mark_project_dirty()
@@ -1184,6 +1185,98 @@ class TimelineLanesWidget(QWidget):
             self.box_select_start = None
             self.box_select_current = None
             self.update()
+
+    def contextMenuEvent(self, event):
+        if getattr(self, "_ignore_context_menu", False):
+            self._ignore_context_menu = False
+            event.accept()
+            return
+            
+        pos = event.pos()
+        x = pos.x()
+        y = pos.y()
+        target, target_type, track, hover_type = self.get_hover_state(x, y)
+        
+        if target and target_type == "item":
+            from PySide6.QtWidgets import QMenu
+            from PySide6.QtGui import QAction
+            
+            menu = QMenu(self)
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: #0b0b0c;
+                    color: #e2e2e5;
+                    border: 1px solid #222225;
+                    font-family: "Consolas", monospace;
+                    font-size: 11px;
+                }
+                QMenu::item:selected {
+                    background-color: #222225;
+                    color: #ffffff;
+                }
+            """)
+            
+            action_convert = QAction("Convert to Backing Track...", self)
+            action_convert.triggered.connect(lambda: self.convert_clip_to_backing_track(target, track))
+            menu.addAction(action_convert)
+            
+            menu.addSeparator()
+            
+            action_delete = QAction("Delete Clip", self)
+            action_delete.triggered.connect(lambda: self.delete_specific_clip(target, track))
+            menu.addAction(action_delete)
+            
+            menu.exec(event.globalPos())
+            event.accept()
+            
+    def convert_clip_to_backing_track(self, target, track):
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        from widgets.backing_track_manager import get_backing_tracks_dir
+        
+        default_name = "Backing Track"
+        if target.file_path:
+            default_name = os.path.splitext(os.path.basename(target.file_path))[0]
+            
+        new_name, ok = QInputDialog.getText(self, "Convert Clip to Backing Track", "Enter backing track name:", text=default_name)
+        if ok and new_name.strip():
+            dest_dir = get_backing_tracks_dir()
+            dest_path = os.path.join(dest_dir, new_name.strip() + ".wav")
+            
+            if os.path.exists(dest_path):
+                QMessageBox.warning(self, "Duplicate Name", "A backing track with this name already exists.")
+                return
+                
+            try:
+                # Extract the visible sliced/comped audio data
+                slice_data = target.get_audio_data_slice(target.start_sample, target.length_samples)
+                
+                # Save to WAV
+                from audio_engine import AudioItem
+                temp_item = AudioItem(start_sample=0, sample_rate=target.sample_rate, audio_data=slice_data)
+                temp_item.save_to_wav(dest_path)
+                
+                # Refresh Backing Track Manager UI
+                if hasattr(self.main_window, 'backing_track_manager'):
+                    self.main_window.backing_track_manager.refresh_list()
+                    
+                QMessageBox.information(self, "Success", f"Successfully converted clip to backing track:\n{new_name.strip() + '.wav'}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to convert clip to backing track:\n{e}")
+                
+    def delete_specific_clip(self, target, track):
+        if hasattr(self.main_window, 'undo_manager'):
+            self.main_window.undo_manager.push_state("Delete Clip")
+        with track.lock:
+            if target in track.items:
+                track.items.remove(target)
+        self.selected_items.clear()
+        self.selected_item = None
+        self.selected_target_type = None
+        self.selected_track_for_item = None
+        self.update_geometry()
+        self.update()
+        if hasattr(self.main_window, 'mark_project_dirty'):
+            self.main_window.mark_project_dirty()
 
     def remove_portions_from_track(self, track, start_sample, end_sample):
         """

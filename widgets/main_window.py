@@ -561,6 +561,11 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         utility_layout.addWidget(self.metronome_widget, 1)
         self.bottom_dock.addTab(utility_widget, "Utilities")
         
+        # Backing Tracks Tab
+        from widgets.backing_track_manager import BackingTrackManagerWidget
+        self.backing_track_manager = BackingTrackManagerWidget(self, self.audio_engine)
+        self.bottom_dock.addTab(self.backing_track_manager, "Backing Tracks")
+        
         # Mixer Tab — last in bottom dock
         self.mixer_widget = MixerWidget(self.audio_engine)
         self.bottom_dock.addTab(self.mixer_widget, "Mixer")
